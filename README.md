@@ -35,19 +35,24 @@ This refactor is intentionally **non-invasive**:
 ├── scripts/
 │   ├── train.py
 │   ├── run_inference.py
-│   └── run_retrieval_eval.py
+│   ├── run_retrieval_eval.py
+│   ├── build_speechbrown_pkl.py
+│   └── scan_speechbrown_audio.py
 └── src/
     └── clasp/
         ├── config/
         │   └── settings.py
         ├── data/
-        │   └── datasets.py
+        │   ├── datasets.py
+        │   └── speechbrown_paths.py
         ├── models/
         │   └── fusion.py
         ├── train/
         │   └── trainer.py
         ├── inference/
+        │   ├── audio_preprocess.py
         │   ├── embed_audio.py
+        │   ├── spectrogram_image.py
         │   └── pipeline.py
         ├── retrieval/
         │   └── search.py
@@ -64,6 +69,7 @@ This refactor is intentionally **non-invasive**:
   - retrieval/evaluation metrics (`Hits@1`, `MRR`, `meanR`) -> `src/clasp/evaluation/metrics.py`
 - `clasp-inference.ipynb`
   - HuBERT audio embedding extraction -> `src/clasp/inference/embed_audio.py`
+  - spectrogram + EfficientNet -> `src/clasp/inference/spectrogram_image.py`
   - model loading and top-1 retrieval flow -> `src/clasp/inference/pipeline.py`
   - cosine ranking helpers -> `src/clasp/retrieval/search.py`
 
@@ -132,6 +138,45 @@ uv run python -m compileall src scripts
 4. Run every script below with `uv run` so they use that environment (examples use the recommended paths).
 
 Alternative without uv: `pip install -e .` or install the packages listed under `[project] dependencies` in `pyproject.toml`.
+
+## SpeechBrown → total_dataset.pkl (real data)
+
+Optional dependencies for building a pickle from [SpeechBrown](https://huggingface.co/datasets/llm-lab/SpeechBrown) metadata and local audio:
+
+```bash
+uv sync --extra realdata
+```
+
+**Prerequisite:** download SpeechBrown (for example `global_metadata.json` and `dataset_part1.zip` via the Hugging Face dataset page or CLI), unzip under your **dataset root** so the WAV files exist. Metadata often lists `dataset/part1/audios/...` while the zip unpacks to `dataset_part1/audios/...`; `build_speechbrown_pkl.py` tries both layouts.
+
+Quick test build (caps rows before splitting):
+
+```bash
+uv run python scripts/build_speechbrown_pkl.py \
+  --metadata-json path/to/global_metadata.json \
+  --dataset-root path/to/folder_that_resolves_json_paths \
+  --output data/datasets/total_dataset_real.pkl \
+  --max-samples 120
+```
+
+**Audio quality:** HuBERT crashes on near-empty waveforms. Loading uses mono conversion, safe normalization, and pads short clips to 1s at 16 kHz (`audio_preprocess.py`). To **exclude** files shorter than a threshold before building (faster than padding edge cases), pass e.g. `--min-audio-seconds 0.5`. To **audit** bad rows: `uv run python scripts/scan_speechbrown_audio.py --metadata-json ... --dataset-root ... --min-audio-seconds 0.5 --output-bad bad_audio.json`.
+
+**Note:** `run_retrieval_eval.py` defaults to `--num-candidates 100`. The test split must contain enough samples for that (roughly, test size should exceed `num-candidates`), or pass a smaller `--num-candidates` (for a tiny build, use at most `test_size - 1`).
+
+Evaluate with the generated pickle and a CLASP checkpoint:
+
+```bash
+uv run python scripts/run_retrieval_eval.py \
+  --dataset-path data/datasets/total_dataset_real.pkl \
+  --mode candidate \
+  --model-path models/checkpoints/clasp.pt \
+  --audio-key hubert-emb \
+  --text-key text \
+  --threshold 0.5 \
+  --num-candidates 10
+```
+
+Point `--model-path` at your CLASP `.pt` (for example a file downloaded from [Models](https://huggingface.co/llm-lab/CLASP)).
 
 ## End-to-end workflow
 

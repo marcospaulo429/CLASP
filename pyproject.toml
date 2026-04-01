@@ -19,6 +19,13 @@ dependencies = [
   "transformers",
 ]
 
+[project.optional-dependencies]
+realdata = [
+  "sentence-transformers",
+  "torchvision",
+  "Pillow",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/clasp"]
 
