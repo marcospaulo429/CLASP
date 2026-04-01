@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clasp"
+version = "0.1.0"
+description = "Modularized CLASP training, inference, and retrieval evaluation."
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+  "torch",
+  "numpy",
+  "tqdm",
+  "scikit-learn",
+  "matplotlib",
+  "librosa",
+  "soundfile",
+  "transformers",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/clasp"]
+
+[tool.uv]
+package = true
+
