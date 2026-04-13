@@ -17,6 +17,8 @@ from clasp.evaluation.metrics import (
     evaluate_matrix_by_source,
     evaluate_model_on_candidates,
 )
+from clasp.evaluation.ranking_metrics import compute_ranking_metrics
+from clasp.evaluation.retrieval_plots import save_retrieval_plot
 from clasp.inference.pipeline import load_model
 from clasp.retrieval.search import build_similarity_matrix
 
@@ -33,7 +35,23 @@ def parse_args():
     parser.add_argument("--num-candidates", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--by-source", action="store_true")
+    parser.add_argument(
+        "--plot-out",
+        type=Path,
+        default=None,
+        help="If set (matrix mode only), save retrieval metrics plot as PNG to this path.",
+    )
+    parser.add_argument(
+        "--hits-k",
+        type=str,
+        default="1,5,10,50",
+        help="Comma-separated K values for Hits@K in ranking metrics and plot.",
+    )
     return parser.parse_args()
+
+
+def _parse_hits_k(s: str) -> list[int]:
+    return [int(x.strip()) for x in s.split(",") if x.strip()]
 
 
 def main():
@@ -44,6 +62,11 @@ def main():
         total_dataset = pickle.load(f)
 
     if args.mode == "candidate":
+        if args.plot_out is not None:
+            print(
+                "Warning: --plot-out is ignored in candidate mode (full similarity matrix required).",
+                file=sys.stderr,
+            )
         if not args.model_path:
             raise ValueError("--model-path is required for candidate mode")
 
@@ -69,6 +92,13 @@ def main():
     else:
         results = evaluate_matrix(similarity_matrix, threshold=args.threshold)
     print(results)
+
+    ks = _parse_hits_k(args.hits_k)
+    ranking_metrics, ranks = compute_ranking_metrics(similarity_matrix, ks=ks)
+    print("Ranking metrics:", ranking_metrics)
+
+    if args.plot_out is not None:
+        save_retrieval_plot(ranking_metrics, ranks, args.plot_out, ks=ks)
 
 
 if __name__ == "__main__":

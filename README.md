@@ -303,6 +303,25 @@ uv run python scripts/run_retrieval_eval.py \
   --by-source
 ```
 
+### Ranking metrics and plot (matrix mode)
+
+After the legacy dict (Hits@1, MRR, threshold-based F1, etc.), the script always prints a second line **`Ranking metrics:`** with scores that do **not** use `--threshold`: **Hits@K** (for K from `--hits-k`), **MRR**, **MAP** (same as MRR with one relevant item per query), **mean_rank**, and **median_rank**. Ranks use the same tie rule as before (count candidates with similarity strictly above the diagonal).
+
+To save a PNG (bar chart of Hits@K plus histogram of ranks), pass **`--plot-out`** (ignored in `--mode candidate`). Example:
+
+```bash
+uv run python scripts/run_retrieval_eval.py \
+  --dataset-path data/datasets/total_dataset_v11.pkl \
+  --mode matrix \
+  --emb-key clasp_emb \
+  --text-key text \
+  --threshold 0.5 \
+  --plot-out artifacts/retrieval_eval.png \
+  --hits-k 1,5,10,50
+```
+
+With Docker and a bind mount on the repo root, the file appears on the host at the same relative path (e.g. `artifacts/retrieval_eval.png`).
+
 ## Notes
 
 - Retrieval is performed on audio-derived vector representations (`hubert-emb` or `audio` keys when you set `--audio-key`, depending on your experiment).
