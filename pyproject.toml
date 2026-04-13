@@ -25,6 +25,9 @@ realdata = [
   "torchvision",
   "Pillow",
 ]
+notebooks = [
+  "datasets",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clasp"]
