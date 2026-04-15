@@ -140,3 +140,8 @@ ui-tests/.pnp.*
 notebook/templates/*.html
 
 data/datasets/spoken_squad
+
+# Environment variables
+.env
+.env.local
+.env.*.local
