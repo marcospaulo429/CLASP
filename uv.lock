@@ -190,23 +190,32 @@ realdata = [
     { name = "sentence-transformers" },
     { name = "torchvision" },
 ]
+voxpopuli = [
+    { name = "datasets" },
+    { name = "pillow" },
+    { name = "sentence-transformers" },
+    { name = "torchvision" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets", marker = "extra == 'notebooks'" },
+    { name = "datasets", marker = "extra == 'voxpopuli'" },
     { name = "librosa" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pillow", marker = "extra == 'realdata'" },
+    { name = "pillow", marker = "extra == 'voxpopuli'" },
     { name = "scikit-learn" },
     { name = "sentence-transformers", marker = "extra == 'realdata'" },
+    { name = "sentence-transformers", marker = "extra == 'voxpopuli'" },
     { name = "soundfile" },
     { name = "torch" },
     { name = "torchvision", marker = "extra == 'realdata'" },
+    { name = "torchvision", marker = "extra == 'voxpopuli'" },
     { name = "tqdm" },
     { name = "transformers" },
 ]
-provides-extras = ["realdata", "notebooks"]
+provides-extras = ["realdata", "voxpopuli"]
 
 [[package]]
 name = "click"

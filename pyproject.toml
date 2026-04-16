@@ -25,6 +25,12 @@ realdata = [
   "torchvision",
   "Pillow",
 ]
+voxpopuli = [
+  "datasets",
+  "sentence-transformers",
+  "torchvision",
+  "Pillow",
+]
 notebooks = [
   "datasets",
 ]
