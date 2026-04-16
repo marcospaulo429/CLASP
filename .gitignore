@@ -142,3 +142,9 @@ dev_wav
 Spoken-SQuAD*
 Spoken-SQuAD_audio.zip
 *.pt
+data/datasets/spoken_squad
+
+# Environment variables
+.env
+.env.local
+.env.*.local
