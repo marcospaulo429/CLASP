@@ -34,17 +34,29 @@ from clasp.inference.spectrogram_image import (
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-path", required=True, help="Path to total_dataset_spoken_squad.pkl")
-    parser.add_argument("--model-path", required=True, help="Path to CLASP checkpoint")
+    parser.add_argument(
+        "--dataset-path",
+        type=Path,
+        required=True,
+        help="Path to total_dataset_spoken_squad.pkl",
+    )
+    parser.add_argument("--model-path", type=Path, required=True, help="Path to CLASP checkpoint")
     parser.add_argument(
         "--train-json",
+        type=Path,
         default=Path("data/datasets/spoken_squad/spoken_train-v1.1.json"),
-        help="Spoken SQuAD JSON to reconstruct audio paths",
+        help="Spoken SQuAD JSON to reconstruct audio paths (ignored when using pickle audio_path)",
     )
     parser.add_argument(
         "--wav-dir",
+        type=Path,
         default=Path("data/datasets/spoken_squad/train_wav"),
-        help="Directory with WAV files",
+        help="Directory with WAV files (ignored when using pickle audio_path)",
+    )
+    parser.add_argument(
+        "--audio-paths-from-pickle",
+        action="store_true",
+        help="Require test['audio_path'] aligned with text; do not use --train-json / --wav-dir",
     )
     parser.add_argument("--audio-key", default="hubert-emb")
     parser.add_argument("--text-key", default="text")
@@ -57,10 +69,11 @@ def parse_args():
     parser.add_argument("--device", default=None, help="cuda, cuda:0, or cpu (default: auto)")
     parser.add_argument(
         "--wham-dir",
+        type=Path,
         default=None,
-        help="Directory with WHAM ambient noise files. If None, skip ambient noise eval.",
+        help="Directory with WHAM ambient noise files. If omitted, skip ambient noise eval.",
     )
-    parser.add_argument("--output-csv", default=None, help="Path to save results as CSV")
+    parser.add_argument("--output-csv", type=Path, default=None, help="Path to save results as CSV")
     parser.add_argument("--hubert-model", default="facebook/hubert-large-ls960-ft")
     parser.add_argument("--vision-batch-size", type=int, default=4)
     parser.add_argument("--text-batch-size", type=int, default=32)
@@ -170,22 +183,45 @@ def main():
         total_dataset = pickle.load(f)
     
     test_data = total_dataset["test"]
-    test_size = len(test_data[args.text_key])
-    
+    full_n = len(test_data[args.text_key])
+    test_size = full_n
+
     if args.max_test_samples:
         test_size = min(test_size, args.max_test_samples)
-    
+
     if args.num_candidates > test_size:
         print(f"Warning: num_candidates ({args.num_candidates}) > test_size ({test_size})")
         print(f"Reducing num_candidates to {max(1, test_size - 1)}")
         args.num_candidates = max(1, test_size - 1)
-    
-    # Reconstruct audio paths from JSON
-    print(f"Reconstructing audio paths from {args.train_json}...")
-    audio_paths = load_spoken_squad_audio_paths(args.train_json, args.wav_dir, test_size)
-    
+
+    paths_from_pkl = test_data.get("audio_path")
+    aligned_pkl = (
+        isinstance(paths_from_pkl, (list, tuple))
+        and len(paths_from_pkl) == full_n
+    )
+
+    if args.audio_paths_from_pickle:
+        if not aligned_pkl:
+            raise SystemExit(
+                "--audio-paths-from-pickle requires test['audio_path'] with the same "
+                f"length as test['{args.text_key}'] ({full_n} rows)."
+            )
+        use_pkl_audio_paths = True
+    else:
+        use_pkl_audio_paths = aligned_pkl
+
+    if use_pkl_audio_paths:
+        print("Using test['audio_path'] from pickle (aligned with embeddings).")
+        audio_paths = [str(paths_from_pkl[i]) for i in range(test_size)]
+    else:
+        print(f"Reconstructing audio paths from {args.train_json}...")
+        audio_paths = load_spoken_squad_audio_paths(args.train_json, args.wav_dir, test_size)
+
     if not audio_paths:
-        raise SystemExit("No audio paths found")
+        raise SystemExit(
+            "No audio paths found. For Spoken-SQuAD, set --train-json and --wav-dir. "
+            "For VoxPopuli-style pickles, rebuild with audio_path in test split."
+        )
     
     print(f"Found {len(audio_paths)} audio files for test set")
     
@@ -205,7 +241,7 @@ def main():
     if args.wham_dir:
         print(f"Loading WHAM ambient noise from {args.wham_dir}...")
         try:
-            wham_audio = load_wham_sample(Path(args.wham_dir))
+            wham_audio = load_wham_sample(args.wham_dir)
         except FileNotFoundError as e:
             print(f"Warning: {e}")
             args.wham_dir = None

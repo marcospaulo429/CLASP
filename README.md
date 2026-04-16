@@ -178,6 +178,54 @@ uv run python scripts/run_retrieval_eval.py \
 
 Point `--model-path` at your CLASP `.pt` (for example a file downloaded from [Models](https://huggingface.co/llm-lab/CLASP)).
 
+## VoxPopuli (English, validation) → same pickle shape as Spoken-SQuAD
+
+Use [facebook/voxpopuli](https://huggingface.co/datasets/facebook/voxpopuli) config **`en`**, split **`validation`** (there is no `dev` split on the Hub). The builder writes a pickle with only **`test`**, containing `hubert-emb`, `text`, `image`, and **`audio_path`** (aligned rows) so `run_noise_robustness_eval.py` can load WAV paths without Spoken-SQuAD JSON.
+
+**Download scope:** `build_voxpopuli_pkl.py` does **not** call `load_dataset("facebook/voxpopuli", "en", …)` on the full builder (which would pull every `en/train-*.parquet`). It downloads only **`en/validation-00000-of-00001.parquet`** via `hf_hub_download`, then opens it with `load_dataset("parquet", …)` (no streaming). For a fully offline machine, pass **`--validation-parquet /path/to/en/validation-00000-of-00001.parquet`** after copying that file from the Hub or another cache.
+
+Install extras (HF `datasets`, LaBSE, EfficientNet image stack):
+
+```bash
+uv sync --extra voxpopuli
+```
+
+Build (start with `--max-samples` for a quick dev subset; full `en` validation is large):
+
+```bash
+uv run python scripts/build_voxpopuli_pkl.py \
+  --output data/datasets/total_dataset_voxpopuli_en_validation.pkl \
+  --audio-cache-dir data/datasets/voxpopuli_en_validation_wav \
+  --max-samples 500
+```
+
+Optional: `--require-gold-only` keeps rows with `is_gold_transcript == True`. Optional: `--validation-parquet` for a local validation parquet (offline).
+
+**Retrieval:** same as other pickles—populate `clasp_emb` on the test dict if you use matrix mode, then:
+
+```bash
+uv run python scripts/run_retrieval_eval.py \
+  --dataset-path data/datasets/total_dataset_voxpopuli_en_validation.pkl \
+  --mode matrix \
+  --emb-key clasp_emb \
+  --text-key text \
+  --threshold 0.5 \
+  --num-candidates 10
+```
+
+For **candidate** mode, pass `--model-path` and use `--audio-key hubert-emb` as usual. Matrix mode needs enough test rows vs `--num-candidates` (see note above).
+
+**Noise robustness:** if `test['audio_path']` exists and matches `len(test['text'])`, paths are taken from the pickle automatically (no `--train-json` / `--wav-dir`). To fail fast when you expect that layout, add `--audio-paths-from-pickle`:
+
+```bash
+uv run python scripts/run_noise_robustness_eval.py \
+  --dataset-path data/datasets/total_dataset_voxpopuli_en_validation.pkl \
+  --model-path models/checkpoints/clasp.pt \
+  --audio-paths-from-pickle \
+  --num-candidates 10 \
+  --max-test-samples 100
+```
+
 ## End-to-end workflow
 
 Follow these steps in order. Steps 1–2 depend on whether you already have the aggregated dataset and vectors.
