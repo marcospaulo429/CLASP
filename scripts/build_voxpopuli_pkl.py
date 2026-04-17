@@ -6,11 +6,16 @@ Loads only ``en/validation-00000-of-00001.parquet`` (no full ``en/train-*`` down
 
 Each row: transcript = normalized_text, audio written to --audio-cache-dir for HuBERT/EfficientNet.
 Output includes test[\"audio_path\"] aligned with embeddings for run_noise_robustness_eval.py.
+
+Use ``--replicate-for-train`` (or ``--val-fraction``) so the pickle also has ``train`` / ``validation``
+keys required by ``scripts/train.py``.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
+import io
 import pickle
 import re
 import sys
@@ -35,7 +40,7 @@ from clasp.inference.spectrogram_image import (
 )
 
 try:
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 except ImportError as e:
     raise SystemExit(
         "Missing dependency: datasets. Install with: uv sync --extra voxpopuli"
@@ -70,15 +75,8 @@ def _squeeze_hubert_list(embeddings: list[torch.Tensor]) -> list[torch.Tensor]:
     return out
 
 
-def _audio_to_mono_16k_padded(audio_dict_or_array) -> np.ndarray:
-    # Hugging Face datasets 4.x + torchcodec: row["audio"] is often an AudioDecoder with
-    # __getitem__("array"/"sampling_rate"), not a plain dict. Plain dicts still come from older paths.
-    try:
-        arr = np.asarray(audio_dict_or_array["array"], dtype=np.float32)
-        sr = int(audio_dict_or_array["sampling_rate"])
-    except (TypeError, KeyError, ValueError):
-        arr = np.asarray(audio_dict_or_array, dtype=np.float32)
-        sr = TARGET_SR
+def _normalize_resample_pad_mono(arr: np.ndarray, sr: int) -> np.ndarray:
+    arr = np.asarray(arr, dtype=np.float32)
     if arr.ndim > 1:
         arr = np.mean(arr, axis=1)
     arr = arr.astype(np.float32)
@@ -90,6 +88,43 @@ def _audio_to_mono_16k_padded(audio_dict_or_array) -> np.ndarray:
     if len(arr) < MIN_SAMPLES_16K:
         arr = np.pad(arr, (0, MIN_SAMPLES_16K - len(arr)), mode="constant")
     return arr
+
+
+def _audio_to_mono_16k_padded(audio_dict_or_array) -> np.ndarray:
+    """PCM mono 16 kHz padded from HF row value.
+
+    With ``Audio(decode=False)`` (see ``_dataset_audio_no_decode``), ``audio`` is a dict with
+    ``path`` and/or ``bytes`` only — no ``torchcodec`` needed. Older rows may still expose
+    ``array`` + ``sampling_rate``.
+    """
+    if isinstance(audio_dict_or_array, dict):
+        if audio_dict_or_array.get("array") is not None:
+            arr = np.asarray(audio_dict_or_array["array"], dtype=np.float32)
+            sr = int(audio_dict_or_array.get("sampling_rate") or TARGET_SR)
+            return _normalize_resample_pad_mono(arr, sr)
+        raw = audio_dict_or_array.get("bytes")
+        if raw:
+            buf = io.BytesIO(raw)
+            arr, sr = sf.read(buf, dtype="float32", always_2d=False)
+            return _normalize_resample_pad_mono(np.asarray(arr, dtype=np.float32), int(sr))
+        path = audio_dict_or_array.get("path")
+        if path:
+            arr, sr = sf.read(path, dtype="float32", always_2d=False)
+            return _normalize_resample_pad_mono(np.asarray(arr, dtype=np.float32), int(sr))
+        raise ValueError("audio dict has no array, bytes, or path")
+    arr = np.asarray(audio_dict_or_array, dtype=np.float32)
+    return _normalize_resample_pad_mono(arr, TARGET_SR)
+
+
+def _dataset_audio_no_decode(ds):
+    """HF ``datasets`` 4.x decodes ``Audio`` with ``torchcodec`` by default; avoid that."""
+    feats = getattr(ds, "features", None)
+    if feats is not None and "audio" in feats:
+        try:
+            return ds.cast_column("audio", Audio(decode=False))
+        except (TypeError, ValueError, KeyError):
+            pass
+    return ds
 
 
 def _safe_wav_name(audio_id: str, idx: int) -> str:
@@ -145,6 +180,10 @@ def _build_split_dict(
     }
 
 
+def _slice_split(split_dict: dict, start: int, stop: int) -> dict:
+    return {key: split_dict[key][start:stop] for key in split_dict}
+
+
 def _resolve_validation_parquet(validation_parquet: Path | None) -> Path:
     if validation_parquet is not None:
         p = validation_parquet.expanduser().resolve()
@@ -173,6 +212,7 @@ def load_voxpopuli_rows(
         data_files={"validation": str(parquet_path)},
         split="validation",
     )
+    ds = _dataset_audio_no_decode(ds)
     rows: list[dict] = []
 
     for idx, ex in enumerate(tqdm(ds, desc="voxpopuli en/validation")):
@@ -228,6 +268,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sentence-transformer", default="sentence-transformers/LaBSE")
     p.add_argument("--vision-batch-size", type=int, default=4)
     p.add_argument("--text-batch-size", type=int, default=32)
+    split = p.add_mutually_exclusive_group()
+    split.add_argument(
+        "--replicate-for-train",
+        action="store_true",
+        help="Set train and validation to deep copies of the built split (overfit / sanity check for train.py).",
+    )
+    split.add_argument(
+        "--val-fraction",
+        type=float,
+        default=None,
+        metavar="F",
+        help="Hold out fraction F in (0,1) for validation; train gets first (1-F) of rows (same order as parquet).",
+    )
     return p.parse_args()
 
 
@@ -268,13 +321,38 @@ def main() -> None:
         args.text_batch_size,
     )
 
-    total_dataset = {"test": test_split}
+    if args.replicate_for_train:
+        total_dataset = {
+            "train": copy.deepcopy(test_split),
+            "validation": copy.deepcopy(test_split),
+            "test": copy.deepcopy(test_split),
+        }
+        split_msg = "train+validation+test (replicated, deep copy)"
+    elif args.val_fraction is not None:
+        vf = args.val_fraction
+        if not (0.0 < vf < 1.0):
+            raise SystemExit("--val-fraction must be strictly between 0 and 1")
+        k = int(n * (1.0 - vf))
+        if k < 1 or n - k < 1:
+            raise SystemExit(
+                f"--val-fraction={vf} with n={n} yields empty train or validation; "
+                "use more rows or a smaller fraction."
+            )
+        total_dataset = {
+            "train": _slice_split(test_split, 0, k),
+            "validation": _slice_split(test_split, k, n),
+            "test": copy.deepcopy(test_split),
+        }
+        split_msg = f"train={k} val={n - k} test={n} (full test retained)"
+    else:
+        total_dataset = {"test": test_split}
+        split_msg = "test only"
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "wb") as f:
         pickle.dump(total_dataset, f)
 
-    print(f"Wrote {args.output} (test only, n={n}, audio_path included)")
+    print(f"Wrote {args.output} ({split_msg}, n={n}, audio_path in split)")
 
 
 if __name__ == "__main__":
