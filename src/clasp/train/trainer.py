@@ -20,6 +20,8 @@ def train_the_model(
     learning_rate=5e-6,
     delta=0.6,
     temperature=np.log(0.07),
+    patience=10,
+    no_early_stopping=False,
 ):
     del delta  # kept for signature parity with notebook
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -89,12 +91,22 @@ def train_the_model(
 
         return train_loss
 
-    def train(model, optimizer, train_dataloader, val_dataloader, model_path_save, epochs, temperature, patience=10):
+    def train(
+        model,
+        optimizer,
+        train_dataloader,
+        val_dataloader,
+        model_path_save,
+        epochs,
+        temperature,
+        patience_inner,
+        no_early_stopping_inner,
+    ):
         train_losses = []
         val_losses = []
         best_val_loss = float("inf")
         counter = 0
-        epoch_num = num_epochs
+        epoch_num = epochs
         best_model = None
 
         scheduler = lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.4)
@@ -126,8 +138,10 @@ def train_the_model(
             else:
                 counter += 1
 
-            if counter >= patience:
-                print(f"Early stopping after {patience} epochs without improvement in validation loss.")
+            if not no_early_stopping_inner and counter >= patience_inner:
+                print(
+                    f"Early stopping after {patience_inner} epochs without improvement in validation loss."
+                )
                 with open("stopped_epoch.txt", "w", encoding="utf-8") as f:
                     print(f"Stopped at epoch: {epoch + 1}")
                     f.write(f"Stopped at epoch: {epoch + 1}\n")
@@ -156,6 +170,8 @@ def train_the_model(
         model_path_save,
         num_epochs,
         temperature,
+        patience,
+        no_early_stopping,
     )
     plot_loss(train_losses, epoch_num, "train")
     plot_loss(val_losses, epoch_num, "validation")
