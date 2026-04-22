@@ -1,5 +1,6 @@
 import gc
 from copy import deepcopy
+from pathlib import Path
 from time import time
 
 import matplotlib.pyplot as plt
@@ -20,6 +21,7 @@ def train_the_model(
     learning_rate=5e-6,
     delta=0.6,
     temperature=np.log(0.07),
+    lr_step_size=10,
 ):
     del delta  # kept for signature parity with notebook
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -97,7 +99,7 @@ def train_the_model(
         epoch_num = num_epochs
         best_model = None
 
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.4)
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=lr_step_size, gamma=0.4)
 
         for epoch in range(epochs):
             gc.collect()
@@ -139,14 +141,21 @@ def train_the_model(
 
         return train_losses, val_losses, epoch_num, best_model
 
-    def plot_loss(loss, epoch_num, label):
+    def plot_losses(train_losses, val_losses, epoch_num, save_path):
+        import matplotlib
+        matplotlib.use("Agg")  # headless backend, no display needed
         ls_epoch = [_ + 1 for _ in range(epoch_num)]
-        plt.plot(ls_epoch, loss, color="r", label=label)
+        plt.figure()
+        plt.plot(ls_epoch, train_losses, color="r", label="train")
+        plt.plot(ls_epoch, val_losses, color="b", label="validation")
         plt.title("Loss plot")
         plt.ylabel("Loss")
         plt.xlabel("epoch")
         plt.legend()
-        plt.show()
+        plot_path = Path(save_path).with_suffix(".loss.png")
+        plt.savefig(plot_path)
+        plt.close()
+        print(f"Loss plot saved to {plot_path}")
 
     train_losses, val_losses, epoch_num, best_model = train(
         model,
@@ -157,7 +166,6 @@ def train_the_model(
         num_epochs,
         temperature,
     )
-    plot_loss(train_losses, epoch_num, "train")
-    plot_loss(val_losses, epoch_num, "validation")
+    plot_losses(train_losses, val_losses, epoch_num, model_path_save)
     return best_model
 

@@ -31,6 +31,10 @@ def parse_args():
     parser.add_argument("--in-features-text", type=int, default=1024)
     parser.add_argument("--in-features-image", type=int, default=1000)
     parser.add_argument("--mode", default="joint", choices=["joint", "audio", "image"])
+    parser.add_argument("--freeze-encoders", action="store_true",
+                        help="Freeze audio_seq and image_seq, train only the fusion head (mix_seq).")
+    parser.add_argument("--lr-step-size", type=int, default=10,
+                        help="StepLR step size in epochs (default 10).")
     return parser.parse_args()
 
 
@@ -58,6 +62,14 @@ def main():
         mode=args.mode,
     ).to(device)
 
+    if args.freeze_encoders:
+        for param in model.audio_seq.parameters():
+            param.requires_grad = False
+        for param in model.image_seq.parameters():
+            param.requires_grad = False
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Encoders frozen — training only mix_seq ({trainable:,} params)")
+
     best_model = train_the_model(
         model=model,
         train_dataloader=train_loader,
@@ -67,6 +79,7 @@ def main():
         num_epochs=args.num_epochs,
         learning_rate=args.learning_rate,
         temperature=args.temperature,
+        lr_step_size=args.lr_step_size,
     )
     torch.save(best_model, args.save_path)
     print(f"Saved model to {args.save_path}")
