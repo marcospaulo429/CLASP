@@ -26,11 +26,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from clasp.config.settings import get_default_device
+from clasp.inference.audio_preprocess import load_mono_16k_padded
 from clasp.inference.embed_audio import hubert_audio_files
 from clasp.inference.spectrogram_image import (
     efficientnet_embeddings_from_audio_paths,
     load_efficientnet_b7,
 )
+from clasp.audio.noise_augmentation import add_white_noise, add_reverberation
 
 
 def _squeeze_hubert_list(embeddings: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -40,6 +42,32 @@ def _squeeze_hubert_list(embeddings: list[torch.Tensor]) -> list[torch.Tensor]:
             e = e.squeeze(0)
         out.append(e.contiguous().float().cpu())
     return out
+
+
+def hubert_audio_files_with_noise(
+    paths: list[str],
+    processor,
+    model,
+    device: torch.device,
+    noise_prob: float,
+    noise_snr: float,
+    noise_types: list[str],
+) -> list[torch.Tensor]:
+    embeddings = []
+    for path in tqdm(paths, desc="hubert+noise"):
+        audio = load_mono_16k_padded(path)
+        if noise_prob > 0.0 and np.random.random() < noise_prob:
+            noise_type = np.random.choice(noise_types)
+            if noise_type == "white":
+                audio = add_white_noise(audio, snr_db=noise_snr)
+            elif noise_type == "reverb":
+                audio = add_reverberation(audio, sr=16000)
+        t = torch.from_numpy(audio.astype(np.float32))
+        inputs = processor(t, sampling_rate=16000, return_tensors="pt").to(device)
+        with torch.no_grad():
+            hidden = model(**inputs).last_hidden_state
+            embeddings.append(torch.mean(hidden, dim=1))
+    return embeddings
 
 
 def _split_indices(
@@ -100,11 +128,20 @@ def _build_split_dict(
     device: torch.device,
     vision_batch_size: int,
     text_batch_size: int,
+    noise_prob: float = 0.0,
+    noise_snr: float = 20.0,
+    noise_types: list[str] | None = None,
 ) -> dict:
     paths = [rows[i]["_abs_audio"] for i in indices]
     texts = [rows[i]["text"] for i in indices]
 
-    hubert_raw = hubert_audio_files(paths, hubert_processor, hubert_model, device)
+    if noise_prob > 0.0 and noise_types:
+        hubert_raw = hubert_audio_files_with_noise(
+            paths, hubert_processor, hubert_model, device,
+            noise_prob, noise_snr, noise_types,
+        )
+    else:
+        hubert_raw = hubert_audio_files(paths, hubert_processor, hubert_model, device)
     hubert_list = _squeeze_hubert_list(hubert_raw)
 
     text_emb = sentence_model.encode(
@@ -165,6 +202,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sentence-transformer", default="sentence-transformers/LaBSE")
     p.add_argument("--vision-batch-size", type=int, default=4)
     p.add_argument("--text-batch-size", type=int, default=32)
+    # Noise augmentation (applied only to training split)
+    p.add_argument("--noise-prob", type=float, default=0.0,
+                   help="Probability [0-1] of applying noise to each training sample.")
+    p.add_argument("--noise-snr", type=float, default=20.0,
+                   help="SNR in dB for noise augmentation (lower = more noise).")
+    p.add_argument("--noise-types", nargs="+", default=["white", "reverb"],
+                   choices=["white", "reverb"],
+                   help="Noise types to randomly sample from.")
     return p.parse_args()
 
 
@@ -204,7 +249,7 @@ def main() -> None:
 
     vision_model, vision_preprocess = load_efficientnet_b7(device)
 
-    def build(indices: list[int]) -> dict:
+    def build(indices: list[int], augment: bool = False) -> dict:
         return _build_split_dict(
             rows,
             indices,
@@ -216,10 +261,13 @@ def main() -> None:
             device,
             args.vision_batch_size,
             args.text_batch_size,
+            noise_prob=args.noise_prob if augment else 0.0,
+            noise_snr=args.noise_snr,
+            noise_types=args.noise_types,
         )
 
     total_dataset = {
-        "train": build(train_idx),
+        "train": build(train_idx, augment=True),
         "validation": build(val_idx),
         "test": build(test_idx),
     }
