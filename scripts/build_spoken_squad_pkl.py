@@ -32,7 +32,13 @@ from clasp.inference.spectrogram_image import (
     efficientnet_embeddings_from_audio_paths,
     load_efficientnet_b7,
 )
-from clasp.audio.noise_augmentation import add_white_noise, add_reverberation
+from clasp.audio.noise_augmentation import (
+    add_ambient_noise,
+    add_reverberation,
+    add_white_noise,
+    load_esc50_clip,
+    scan_esc50_files,
+)
 
 
 def _squeeze_hubert_list(embeddings: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -52,6 +58,7 @@ def hubert_audio_files_with_noise(
     noise_prob: float,
     noise_snr: float,
     noise_types: list[str],
+    esc50_files: list | None = None,
 ) -> list[torch.Tensor]:
     embeddings = []
     for path in tqdm(paths, desc="hubert+noise"):
@@ -62,6 +69,9 @@ def hubert_audio_files_with_noise(
                 audio = add_white_noise(audio, snr_db=noise_snr)
             elif noise_type == "reverb":
                 audio = add_reverberation(audio, sr=16000)
+            elif noise_type == "ambient" and esc50_files:
+                noise_clip = load_esc50_clip(esc50_files, target_sr=16000)
+                audio = add_ambient_noise(audio, noise_clip, snr_db=noise_snr)
         t = torch.from_numpy(audio.astype(np.float32))
         inputs = processor(t, sampling_rate=16000, return_tensors="pt").to(device)
         with torch.no_grad():
@@ -131,6 +141,7 @@ def _build_split_dict(
     noise_prob: float = 0.0,
     noise_snr: float = 20.0,
     noise_types: list[str] | None = None,
+    esc50_files: list | None = None,
 ) -> dict:
     paths = [rows[i]["_abs_audio"] for i in indices]
     texts = [rows[i]["text"] for i in indices]
@@ -138,7 +149,7 @@ def _build_split_dict(
     if noise_prob > 0.0 and noise_types:
         hubert_raw = hubert_audio_files_with_noise(
             paths, hubert_processor, hubert_model, device,
-            noise_prob, noise_snr, noise_types,
+            noise_prob, noise_snr, noise_types, esc50_files,
         )
     else:
         hubert_raw = hubert_audio_files(paths, hubert_processor, hubert_model, device)
@@ -208,8 +219,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--noise-snr", type=float, default=20.0,
                    help="SNR in dB for noise augmentation (lower = more noise).")
     p.add_argument("--noise-types", nargs="+", default=["white", "reverb"],
-                   choices=["white", "reverb"],
+                   choices=["white", "reverb", "ambient"],
                    help="Noise types to randomly sample from.")
+    p.add_argument("--esc50-dir", type=Path, default=None,
+                   help="Path to ESC-50 dataset root (required when 'ambient' is in --noise-types).")
     return p.parse_args()
 
 
@@ -249,6 +262,13 @@ def main() -> None:
 
     vision_model, vision_preprocess = load_efficientnet_b7(device)
 
+    esc50_files = None
+    if "ambient" in args.noise_types:
+        if args.esc50_dir is None:
+            raise SystemExit("--esc50-dir is required when 'ambient' is in --noise-types.")
+        esc50_files = scan_esc50_files(args.esc50_dir)
+        print(f"Loaded {len(esc50_files)} ESC-50 clips from {args.esc50_dir}")
+
     def build(indices: list[int], augment: bool = False) -> dict:
         return _build_split_dict(
             rows,
@@ -264,6 +284,7 @@ def main() -> None:
             noise_prob=args.noise_prob if augment else 0.0,
             noise_snr=args.noise_snr,
             noise_types=args.noise_types,
+            esc50_files=esc50_files,
         )
 
     total_dataset = {
