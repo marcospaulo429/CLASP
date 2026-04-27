@@ -7,10 +7,25 @@ with score strictly greater than the diagonal score.
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import numpy as np
 from tqdm import tqdm
+
+
+def similarity_matrix_to_rows(
+    sim: np.ndarray | list[list[float]] | Sequence[Sequence[float]],
+) -> list[list[float]]:
+    """Convert a square similarity matrix to ``list[list[float]]`` for ``compute_ranking_metrics``.
+
+    Accepts ``numpy.ndarray`` of shape ``(n, n)`` or nested lists/tuples.
+    """
+    if isinstance(sim, np.ndarray):
+        if sim.ndim != 2:
+            raise ValueError("similarity matrix must be 2-D")
+        return sim.astype(np.float64, copy=False).tolist()
+    return [[float(x) for x in row] for row in sim]
 
 
 def _rank_for_row(row: Sequence[float], gold_index: int) -> int:
@@ -56,3 +71,44 @@ def compute_ranking_metrics(
         metrics[f"Hits@{k}"] = float((ranks <= k).mean())
 
     return metrics, ranks
+
+
+def grouped_ranking_summary(
+    ranks: np.ndarray,
+    groups: Mapping[str, np.ndarray],
+    ks: Sequence[int] = (1,),
+) -> dict[str, dict[str, Any]]:
+    """Summarize Hits@K per query group using precomputed 1-based ranks (no matrix).
+
+    Parameters
+    ----------
+    ranks :
+        Shape ``(n_queries,)``, 1-based rank of the relevant item per query.
+    groups :
+        Map group name -> 1-D int array of query indices belonging to that group.
+    ks :
+        Hit cutoffs (e.g. ``(1, 5, 10)``).
+
+    Returns
+    -------
+    Nested dict: ``group_name -> {"n": int, "Hits@k": float, ...}`` for each ``k``.
+    """
+    r = np.asarray(ranks, dtype=np.int64).reshape(-1)
+    k_set = sorted(set(int(k) for k in ks if k > 0))
+    out: dict[str, dict[str, Any]] = {}
+
+    for name, idx in groups.items():
+        ind = np.asarray(idx, dtype=np.int64).reshape(-1)
+        if ind.size == 0:
+            row: dict[str, Any] = {"n": 0}
+            for k in k_set:
+                row[f"Hits@{k}"] = 0.0
+            out[str(name)] = row
+            continue
+        sub = r[ind]
+        row = {"n": int(ind.size)}
+        for k in k_set:
+            row[f"Hits@{k}"] = float((sub <= k).mean())
+        out[str(name)] = row
+
+    return out
