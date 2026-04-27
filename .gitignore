@@ -10,6 +10,9 @@ artifacts
 Spoken_Squad_Dataset
 Spoken*
 data/
+results/
+venv/
+train_wav/
 
 # Created by https://www.gitignore.io/api/python
 # Edit at https://www.gitignore.io/?templates=python

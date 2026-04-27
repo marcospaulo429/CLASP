@@ -1,31 +1,31 @@
-# Venv local (recriado na imagem)
+# Python / uv
 .venv
+venv
+__pycache__
+*.py[cod]
+*$py.class
+*.egg-info
+.eggs
+dist
+build
 
-# Git e IDEs
+# VCS / editor
 .git
+.gitignore
 .cursor
 .idea
 .vscode
 
-# Python
-__pycache__
-*.py[cod]
-*$py.class
+# Large local artifacts (datasets, audio zips)
+*.zip
+*.tar
+*.tar.gz
+
+# Caches
 .pytest_cache
 .mypy_cache
 .ruff_cache
-*.egg-info
-dist
-build
+.cache
 
-# Dados e artefactos grandes (montar com -v em runtime)
-data
-models
-artifacts
-
-# Opcional: não copiar notebooks para acelerar build
+# Notebooks not required for CLI image (drop this line if you need them in the image)
 notebooks
-
-# Ficheiros gerados localmente
-*.csv
-uvicorn.log

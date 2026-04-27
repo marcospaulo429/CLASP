@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1.4
-# Single Dockerfile for all platforms; pick arch via docker compose services (linux/arm64 vs linux/amd64).
-ARG BASE_IMAGE=python:3.10-bookworm
+# CLASP runtime — target linux/amd64 (x86_64 cloud / desktop).
+# Build: docker compose build clasp-amd64
+#    or: docker build -f docker/Dockerfile.amd64 -t clasp:amd64 --build-arg UV_EXTRA_GROUPS=voxpopuli .
 
-FROM ${BASE_IMAGE} AS base
+FROM --platform=linux/amd64 python:3.10-bookworm AS base
 
 ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
