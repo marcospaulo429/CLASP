@@ -88,6 +88,21 @@ def parse_args():
         default=32,
         help="SPIRAL: SentenceTransformer encode batch size",
     )
+    parser.add_argument(
+        "--spiral-chunk-batch-size",
+        type=int,
+        default=1,
+        help=(
+            "SPIRAL: batch multiple same-file time chunks (HuBERT + EfficientNet) per forward. "
+            "Helps long wavs; short clips (single chunk) see little change."
+        ),
+    )
+    parser.add_argument(
+        "--spiral-batch-size-fusion",
+        type=int,
+        default=32,
+        help="SPIRAL: batch size for CLASP fusion encoder over rows of HuBERT+spec vectors.",
+    )
     parser.add_argument("--hubert-model", default="facebook/hubert-large-ls960-ft")
     parser.add_argument("--sentence-transformer", default="sentence-transformers/LaBSE")
     return parser.parse_args()
@@ -115,6 +130,8 @@ def main():
             extra_search_roots=(ROOT,),
             max_samples=args.max_samples,
             batch_size_text=args.batch_size_text,
+            chunk_batch_size_audio=args.spiral_chunk_batch_size,
+            batch_size_fusion=args.spiral_batch_size_fusion,
             hubert_model_id=args.hubert_model,
             sentence_model_id=args.sentence_transformer,
             device=device,

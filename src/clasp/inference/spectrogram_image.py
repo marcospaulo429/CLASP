@@ -45,6 +45,7 @@ def efficientnet_embedding_from_waveform(
     preprocess: Callable,
     device: torch.device,
     chunk_samples: int = 320_000,
+    chunk_batch_size: int = 1,
 ) -> torch.Tensor:
     """Logits EfficientNet-B7 médios sobre janelas do sinal (áudio longo)."""
     y = np.asarray(y, dtype=np.float32).reshape(-1)
@@ -57,14 +58,20 @@ def efficientnet_embedding_from_waveform(
         chunks.append(y[start:end])
         start = end
     logits_acc = None
+    bs = max(1, int(chunk_batch_size))
     with torch.no_grad():
-        for piece in chunks:
-            if piece.size < 16_000:
-                piece = np.pad(piece, (0, 16_000 - piece.size), mode="constant")
-            pil = spectrogram_pil_from_waveform(piece)
-            t = preprocess(pil).unsqueeze(0).to(device)
-            logits = vision_model(t)[0].detach().cpu().float()
-            logits_acc = logits if logits_acc is None else logits_acc + logits
+        for i in range(0, len(chunks), bs):
+            batch_pieces = chunks[i : i + bs]
+            tensors: list[torch.Tensor] = []
+            for piece in batch_pieces:
+                if piece.size < 16_000:
+                    piece = np.pad(piece, (0, 16_000 - piece.size), mode="constant")
+                pil = spectrogram_pil_from_waveform(piece)
+                tensors.append(preprocess(pil))
+            batch_t = torch.stack(tensors).to(device)
+            logits = vision_model(batch_t).detach().cpu().float()
+            chunk_sum = logits.sum(dim=0)
+            logits_acc = chunk_sum if logits_acc is None else logits_acc + chunk_sum
     assert logits_acc is not None
     return logits_acc / len(chunks)
 

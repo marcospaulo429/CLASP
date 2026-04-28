@@ -26,6 +26,18 @@ def main():
     parser.add_argument("--audio-base-dir", type=Path, default=None)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--batch-size-text", type=int, default=32)
+    parser.add_argument(
+        "--spiral-chunk-batch-size",
+        type=int,
+        default=1,
+        help="Batch HuBERT/EfficientNet chunk forwards within each wav (long audio).",
+    )
+    parser.add_argument(
+        "--spiral-batch-size-fusion",
+        type=int,
+        default=32,
+        help="Batch size for CLASP fusion encoder.",
+    )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
         "--hits-k",
@@ -54,6 +66,8 @@ def main():
         extra_search_roots=(ROOT,),
         max_samples=args.max_samples,
         batch_size_text=args.batch_size_text,
+        chunk_batch_size_audio=args.spiral_chunk_batch_size,
+        batch_size_fusion=args.spiral_batch_size_fusion,
         hubert_model_id=args.hubert_model,
         sentence_model_id=args.sentence_transformer,
         device=dev,

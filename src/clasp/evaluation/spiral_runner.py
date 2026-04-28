@@ -75,9 +75,16 @@ class _SpiralAudioEncoder:
         return load_mono_16k_padded(audio_path)
 
     @torch.no_grad()
-    def embed_paths(self, audio_paths: list[str], chunk_samples: int = 320_000) -> torch.Tensor:
+    def embed_paths(
+        self,
+        audio_paths: list[str],
+        chunk_samples: int = 320_000,
+        chunk_batch_size: int = 1,
+    ) -> torch.Tensor:
         out: list[torch.Tensor] = []
-        hubert_dim, spec_dim = 768, 1000
+        # Large HuBERT = 1024; base = 768 — must match fusion checkpoint (e.g. Concat encoder).
+        hubert_dim = int(self.hubert_model.config.hidden_size)
+        spec_dim = 1000  # EfficientNet-B7 ImageNet logits
         for p in tqdm(audio_paths, desc="SPIRAL audio embeddings (full file)"):
             try:
                 y = self._load_full(p)
@@ -87,6 +94,7 @@ class _SpiralAudioEncoder:
                     self.hubert_model,
                     self.device,
                     chunk_samples=chunk_samples,
+                    chunk_batch_size=chunk_batch_size,
                 )
                 s = efficientnet_embedding_from_waveform(
                     y,
@@ -94,6 +102,7 @@ class _SpiralAudioEncoder:
                     self.vision_preprocess,
                     self.device,
                     chunk_samples=chunk_samples,
+                    chunk_batch_size=chunk_batch_size,
                 )
                 out.append(torch.cat([h.cpu(), s.cpu()], dim=0))
             except Exception as e:
@@ -165,6 +174,8 @@ def run_spiral_retrieval_eval(
     device: torch.device | None = None,
     hits_ks: Sequence[int] = (1, 5, 10, 50),
     chunk_samples: int = 320_000,
+    chunk_batch_size_audio: int = 1,
+    batch_size_fusion: int = 32,
 ) -> dict[str, Any]:
     """Load SPIRAL JSONL, compute embeddings, shared metrics, save plots + JSON."""
     if device is None:
@@ -197,15 +208,30 @@ def run_spiral_retrieval_eval(
 
     print("Encoding audio (HuBERT + EfficientNet)...", flush=True)
     audio_enc = _SpiralAudioEncoder(device, hubert_model_id)
-    raw = audio_enc.embed_paths(audio_paths, chunk_samples=chunk_samples)
-    hubert_dim = 768
+    raw = audio_enc.embed_paths(
+        audio_paths,
+        chunk_samples=chunk_samples,
+        chunk_batch_size=chunk_batch_size_audio,
+    )
+    hubert_dim = int(audio_enc.hubert_model.config.hidden_size)
     spec_dim = 1000
+    if raw.shape[1] != hubert_dim + spec_dim:
+        raise ValueError(
+            f"SPIRAL audio vector dim {raw.shape[1]} != hubert_dim+spec_dim ({hubert_dim}+{spec_dim}); "
+            "check HuBERT variant vs EfficientNet head."
+        )
     hubert_part = raw[:, :hubert_dim]
     spec_part = raw[:, hubert_dim : hubert_dim + spec_dim]
 
     print("Loading CLASP fusion checkpoint...", flush=True)
     clasp = load_model(str(model_path), device)
-    fused_audio = _fuse_clasp(clasp, hubert_part, spec_part, device)
+    fused_audio = _fuse_clasp(
+        clasp,
+        hubert_part,
+        spec_part,
+        device,
+        batch_size=batch_size_fusion,
+    )
 
     if text_emb.shape[1] != fused_audio.shape[1]:
         raise ValueError(

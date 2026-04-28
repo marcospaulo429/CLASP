@@ -46,10 +46,11 @@ Argumentos úteis:
 
 ## Avaliação com Docker
 
-O `Dockerfile` na raiz do repositório instala o CLASP com `uv sync`. Para o eval SPIRAL são necessários **LaBSE** e **torchvision** (grupo opcional `realdata` no `pyproject.toml`). Construa a imagem a partir da raiz do repo:
+Os Dockerfiles ficam em `docker/` (`Dockerfile.amd64` para x86_64, `Dockerfile.arm64` para ARM64). Instalam o CLASP com `uv sync`. Para o eval SPIRAL são necessários **LaBSE** e **torchvision** (extras `realdata` ou `voxpopuli` no `pyproject.toml`). Construa a partir da **raiz do repo** (contexto `.`):
 
 ```bash
-docker build -f Dockerfile -t clasp:spiral-eval \
+# x86_64 (troque por docker/Dockerfile.arm64 em máquina ARM64)
+docker build -f docker/Dockerfile.amd64 -t clasp:spiral-eval \
   --build-arg UV_EXTRA_GROUPS=realdata \
   .
 ```
