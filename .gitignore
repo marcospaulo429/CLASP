@@ -141,6 +141,10 @@ notebook/templates/*.html
 
 data/datasets/spoken_squad
 
+# Noise data
+data/noise_sources
+
+
 # Environment variables
 .env
 .env.local

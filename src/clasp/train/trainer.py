@@ -54,7 +54,7 @@ def train_the_model(
                 eval_loss += loss.item()
                 description = "Validation" if not test_mode else "Test"
                 pbar.set_description(f"{description} Loss: {loss.item():.4f}")
-        return eval_loss
+        return eval_loss / len(dataloader)
 
     def l2_normalize(x, dim=-1):
         return x / x.norm(2, dim=dim, keepdim=True)
@@ -89,9 +89,9 @@ def train_the_model(
                 train_loss += loss.item()
                 pbar.set_description(f"Train Loss: {loss.item():.4f}")
 
-        return train_loss
+        return train_loss / len(dataloader)
 
-    def train(model, optimizer, train_dataloader, val_dataloader, model_path_save, epochs, temperature, patience=10):
+    def train(model, optimizer, train_dataloader, val_dataloader, model_path_save, epochs, temperature, patience=20):
         train_losses = []
         val_losses = []
         best_val_loss = float("inf")
