@@ -93,6 +93,7 @@ Typical CLI paths:
 |------|------|----------------|
 | `--dataset-path` | Aggregated pickle | `data/datasets/total_dataset_v11.pkl` |
 | `--save-path` | Output checkpoint after training | `models/checkpoints/my_clasp.pt` |
+| `--init-checkpoint` | Optional fusion weights before training (`train.py` only) | `models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt` |
 | `--model-path` | Load checkpoint (inference / eval candidate) | `models/checkpoints/clasp.pt` |
 | `--audio-embeddings-path` | Audio-side vectors for inference | `artifacts/embeddings/audio.pt` |
 | `--image-embeddings-path` | Image/spectrogram-side vectors | `artifacts/embeddings/image.pt` |
@@ -103,10 +104,22 @@ Typical CLI paths:
 | Command | Argument | What it is | Suggested folder |
 |---------|----------|------------|------------------|
 | `scripts/train.py` | `--save-path` | Trained model state | `models/checkpoints/` |
+| `scripts/train.py` | `--init-checkpoint` | Optional starting fusion `.pt` (same arch as `HubertLabseConcat`; not optimizer resume) | `models/checkpoints/` |
 | `scripts/run_inference.py` | `--model-path` | CLASP `.pt` (trained or from [Hugging Face](https://huggingface.co/llm-lab/CLASP)) | `models/checkpoints/` |
 | `scripts/run_retrieval_eval.py` | `--model-path` | Same (required for `--mode candidate` only) | `models/checkpoints/` |
 
 Download official weights from [Models](https://huggingface.co/llm-lab/CLASP), place the file under `models/checkpoints/` (for example `models/checkpoints/clasp.pt`), and pass that path to `--model-path` or copy the path into `--save-path` when saving your own training run.
+
+For **warm-start training** (`train.py` `--init-checkpoint`), use the **concat + contrastive** fusion checkpoint **`CLASP_Concat_Final_Fusion_Encoder.pt`** (matches `HubertLabseConcat` in this repo). Do not use `CLASP_Gating.pt` or LASP variants for that flag unless you change the training architecture. Example download:
+
+```bash
+huggingface-cli download llm-lab/CLASP CLASP_Concat_Final_Fusion_Encoder.pt --local-dir models/checkpoints
+# or:
+# curl -L -o models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt \
+#   https://huggingface.co/llm-lab/CLASP/resolve/main/CLASP_Concat_Final_Fusion_Encoder.pt
+```
+
+`--init-checkpoint` loads **fusion weights only** (strict `state_dict` match); it does **not** resume optimizer, scheduler, or epoch counters.
 
 ### Where to put embedding `.pt` files (inference only)
 
@@ -180,9 +193,11 @@ Point `--model-path` at your CLASP `.pt` (for example a file downloaded from [Mo
 
 ## VoxPopuli (English, validation) → same pickle shape as Spoken-SQuAD
 
-Use [facebook/voxpopuli](https://huggingface.co/datasets/facebook/voxpopuli) config **`en`**, split **`validation`** (there is no `dev` split on the Hub). The builder writes a pickle with only **`test`**, containing `hubert-emb`, `text`, `image`, and **`audio_path`** (aligned rows) so `run_noise_robustness_eval.py` can load WAV paths without Spoken-SQuAD JSON.
+Use [facebook/voxpopuli](https://huggingface.co/datasets/facebook/voxpopuli) config **`en`**, split **`validation`** (there is no `dev` split on the Hub). By default the builder writes a pickle with only **`test`**, containing `hubert-emb`, `text`, `image`, and **`audio_path`** (aligned rows) so `run_noise_robustness_eval.py` can load WAV paths without Spoken-SQuAD JSON. For [`scripts/train.py`](scripts/train.py), pass **`--replicate-for-train`** (same split in `train`, `validation`, and `test`) or **`--val-fraction F`** (first `1-F` rows → train, rest → validation, full data kept under `test`).
 
 **Download scope:** `build_voxpopuli_pkl.py` does **not** call `load_dataset("facebook/voxpopuli", "en", …)` on the full builder (which would pull every `en/train-*.parquet`). It downloads only **`en/validation-00000-of-00001.parquet`** via `hf_hub_download`, then opens it with `load_dataset("parquet", …)` (no streaming). For a fully offline machine, pass **`--validation-parquet /path/to/en/validation-00000-of-00001.parquet`** after copying that file from the Hub or another cache.
+
+**Audio decoding:** the script casts the `audio` column to `Audio(decode=False)` and reads WAV bytes or paths with `soundfile`, so you do **not** need to install **`torchcodec`** (which newer `datasets` would otherwise require when decoding `Audio` on the fly).
 
 Install extras (HF `datasets`, LaBSE, EfficientNet image stack):
 
@@ -197,6 +212,23 @@ uv run python scripts/build_voxpopuli_pkl.py \
   --output data/datasets/total_dataset_voxpopuli_en_validation.pkl \
   --audio-cache-dir data/datasets/voxpopuli_en_validation_wav \
   --max-samples 500
+```
+
+Train on the same validation embeddings (overfit / sanity check): add **`--replicate-for-train`** to the same command (drop or raise `--max-samples` if you want the full split). Alternatively **`--val-fraction 0.1`** keeps 90% / 10% row-disjoint train/validation slices in original order.
+
+```bash
+uv run python scripts/build_voxpopuli_pkl.py \
+  --output data/datasets/total_dataset_voxpopuli_en_train.pkl \
+  --audio-cache-dir data/datasets/voxpopuli_en_validation_wav \
+  --replicate-for-train \
+  --max-samples 2000
+
+uv run python scripts/train.py \
+  --dataset-path data/datasets/total_dataset_voxpopuli_en_train.pkl \
+  --save-path models/checkpoints/clasp_vox_val_overfit.pt \
+  --num-epochs 80 \
+  --patience 999 \
+  --no-early-stopping
 ```
 
 Optional: `--require-gold-only` keeps rows with `is_gold_transcript == True`. Optional: `--validation-parquet` for a local validation parquet (offline).
@@ -225,6 +257,45 @@ uv run python scripts/run_noise_robustness_eval.py \
   --num-candidates 10 \
   --max-test-samples 100
 ```
+
+### Docker (VoxPopuli builder + training)
+
+[`docker-compose.yml`](docker-compose.yml) builds from [`docker/Dockerfile.arm64`](docker/Dockerfile.arm64) or [`docker/Dockerfile.amd64`](docker/Dockerfile.amd64) (see [`docker/README.md`](docker/README.md)) with **`UV_EXTRA_GROUPS=voxpopuli`** so `datasets`, LaBSE, and torchvision are installed (same extra as `uv sync --extra voxpopuli`). Rebuild after changing dependencies:
+
+```bash
+docker compose build clasp-arm64   # or clasp-amd64 on x86_64
+```
+
+Inside the container, Hugging Face downloads use the default cache under `/root/.cache/huggingface`. For large runs, mount a host cache, e.g. `-v "$HOME/.cache/huggingface:/root/.cache/huggingface"`, and set `HF_TOKEN` if the Hub requires authentication.
+
+```bash
+docker run --rm -it --gpus all \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/models:/app/models" \
+  -v "$(pwd)/artifacts:/app/artifacts" \
+  -v "$(pwd)/scripts:/app/scripts" \
+  -v "$(pwd)/src:/app/src" \
+  -e HF_TOKEN \
+  -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
+  -w /app clasp:arm64 \
+  uv run python scripts/build_voxpopuli_pkl.py --replicate-for-train --max-samples 500 \
+    --output data/datasets/total_dataset_voxpopuli_en_train.pkl
+
+docker run --rm -it --gpus all \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/models:/app/models" \
+  -v "$(pwd)/scripts:/app/scripts" \
+  -v "$(pwd)/src:/app/src" \
+  -w /app clasp:arm64 \
+  uv run python scripts/train.py \
+    --dataset-path data/datasets/total_dataset_voxpopuli_en_train.pkl \
+    --save-path models/checkpoints/clasp_vox.pt \
+    --no-early-stopping --patience 999 --num-epochs 50
+```
+
+Place a downloaded **`CLASP_Concat_Final_Fusion_Encoder.pt`** on the host under `models/checkpoints/` (same volume mount) and add **`--init-checkpoint models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt`** to that `train.py` line to warm-start from the official concat fusion.
+
+Use **`clasp-amd64`** on x86_64 hosts. If `docker compose run` does not support `--gpus` on your install, use `docker run` as above.
 
 ## End-to-end workflow
 
@@ -296,6 +367,21 @@ uv run python scripts/train.py \
   --num-epochs 100 \
   --learning-rate 5e-6
 ```
+
+**Warm start from a pretrained fusion** (e.g. [llm-lab/CLASP](https://huggingface.co/llm-lab/CLASP) `CLASP_Concat_Final_Fusion_Encoder.pt` under `models/checkpoints/`): pass **`--init-checkpoint`**. Defaults `--in-features-text 1024`, `--in-features-image 1000`, and `--mode joint` must match the checkpoint you load.
+
+```bash
+uv run python scripts/train.py \
+  --dataset-path data/datasets/total_dataset_v11.pkl \
+  --save-path models/checkpoints/my_clasp.pt \
+  --init-checkpoint models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt \
+  --audio-key hubert-emb \
+  --text-key text \
+  --num-epochs 100 \
+  --learning-rate 5e-6
+```
+
+Docker example (same bind mounts as other scripts): add `--init-checkpoint models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt` to the `uv run python scripts/train.py ...` line.
 
 ### 2) Inference (single text query index against paired embedding rows)
 

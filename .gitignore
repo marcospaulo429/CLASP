@@ -13,6 +13,8 @@ data/
 results/
 venv/
 train_wav/
+spiral_dataset/
+logs
 
 # Created by https://www.gitignore.io/api/python
 # Edit at https://www.gitignore.io/?templates=python

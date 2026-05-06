@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-"""Build total_dataset pickle from Hugging Face facebook/voxpopuli (English, validation split).
+"""Build total_dataset pickle from Hugging Face facebook/voxpopuli (English).
 
-Loads only ``en/validation-00000-of-00001.parquet`` (no full ``en/train-*`` download). Optional
-``--validation-parquet`` uses a local copy offline.
+Two modes (--hf-split):
 
-Each row: transcript = normalized_text, audio written to --audio-cache-dir for HuBERT/EfficientNet.
-Output includes test[\"audio_path\"] aligned with embeddings for run_noise_robustness_eval.py.
+  validation (default)
+    Loads only ``en/validation-00000-of-00001.parquet`` (single small file).
+    Use --replicate-for-train / --val-fraction to produce train+validation splits
+    from the validation data alone (sanity-check / small-scale runs).
 
-Use ``--replicate-for-train`` (or ``--val-fraction``) so the pickle also has ``train`` / ``validation``
-keys required by ``scripts/train.py``.
+  train
+    Streams the full ``en`` train split from the Hub via the HuggingFace datasets
+    streaming API — no multi-GB download required.  Writes WAVs to
+    --train-audio-cache-dir and re-uses any WAV that already exists there.
+    The validation split is built from the standard validation parquet (same as
+    default mode) and added as pkl["validation"] + pkl["test"].
+    Use --max-train-samples to cap the number of train rows processed.
+
+Each row: transcript = normalized_text, audio written to cache dir for HuBERT/EfficientNet.
+Output includes split["audio_path"] aligned with embeddings for eval scripts.
 """
 
 from __future__ import annotations
@@ -204,6 +213,7 @@ def load_voxpopuli_rows(
     require_gold: bool,
     validation_parquet: Path | None,
 ) -> list[dict]:
+    """Load VoxPopuli EN *validation* rows from the local parquet file."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = _resolve_validation_parquet(validation_parquet)
     print(f"Loading VoxPopuli EN validation from parquet: {parquet_path}")
@@ -225,8 +235,9 @@ def load_voxpopuli_rows(
         wav_name = _safe_wav_name(audio_id, len(rows))
         out_path = (cache_dir / wav_name).resolve()
 
-        arr = _audio_to_mono_16k_padded(ex["audio"])
-        sf.write(str(out_path), arr, TARGET_SR, subtype="PCM_16")
+        if not out_path.exists():
+            arr = _audio_to_mono_16k_padded(ex["audio"])
+            sf.write(str(out_path), arr, TARGET_SR, subtype="PCM_16")
 
         rows.append({"text": text, "_abs_audio": str(out_path)})
         if max_samples is not None and len(rows) >= max_samples:
@@ -235,8 +246,73 @@ def load_voxpopuli_rows(
     return rows
 
 
+def load_voxpopuli_train_rows(
+    cache_dir: Path,
+    max_samples: int | None,
+    require_gold: bool,
+) -> list[dict]:
+    """Stream VoxPopuli EN *train* split from the Hub — no full download needed.
+
+    Uses ``streaming=True`` so only the individual audio clips that are actually
+    processed are transferred.  WAVs already present in *cache_dir* are reused
+    without re-downloading (safe to resume interrupted runs).
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    print(
+        f"Streaming VoxPopuli EN train split from HuggingFace Hub "
+        f"(max_samples={max_samples}, require_gold={require_gold}) …"
+    )
+    ds = load_dataset(
+        VOXPOPULI_REPO,
+        "en",
+        split="train",
+        streaming=True,
+        trust_remote_code=False,
+    )
+    ds = _dataset_audio_no_decode(ds)
+
+    rows: list[dict] = []
+    scanned = 0
+    pbar = tqdm(desc="voxpopuli en/train (streaming)", unit="rows")
+    for ex in ds:
+        scanned += 1
+        text = (ex.get("normalized_text") or "").strip()
+        if not text:
+            continue
+        if require_gold and not ex.get("is_gold_transcript", True):
+            continue
+
+        audio_id = str(ex.get("audio_id", f"row_{scanned}"))
+        wav_name = _safe_wav_name(audio_id, len(rows))
+        out_path = (cache_dir / wav_name).resolve()
+
+        if not out_path.exists():
+            arr = _audio_to_mono_16k_padded(ex["audio"])
+            sf.write(str(out_path), arr, TARGET_SR, subtype="PCM_16")
+
+        rows.append({"text": text, "_abs_audio": str(out_path)})
+        pbar.update(1)
+
+        if max_samples is not None and len(rows) >= max_samples:
+            break
+
+    pbar.close()
+    print(f"Collected {len(rows)} train rows (scanned {scanned} raw examples).")
+    return rows
+
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument(
+        "--hf-split",
+        choices=["train", "validation"],
+        default="validation",
+        help=(
+            "Which VoxPopuli EN split to use as the *train* source. "
+            "'validation' (default) replicates old behaviour. "
+            "'train' streams the full train split from the Hub."
+        ),
+    )
     p.add_argument(
         "--output",
         type=Path,
@@ -246,9 +322,26 @@ def parse_args() -> argparse.Namespace:
         "--audio-cache-dir",
         type=Path,
         default=Path("data/datasets/voxpopuli_en_validation_wav"),
-        help="Where to write per-clip WAV files (reused if already present).",
+        help="Where to write per-clip WAV files for the *validation* split (reused if already present).",
     )
-    p.add_argument("--max-samples", type=int, default=None)
+    p.add_argument(
+        "--train-audio-cache-dir",
+        type=Path,
+        default=Path("data/datasets/voxpopuli_en_train_wav"),
+        help="Where to write per-clip WAV files for the *train* split (only used with --hf-split train).",
+    )
+    p.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Max rows to collect from the selected split (train or validation).",
+    )
+    p.add_argument(
+        "--max-val-samples",
+        type=int,
+        default=None,
+        help="Max rows to collect from the validation split when --hf-split train (default: all ~1752).",
+    )
     p.add_argument(
         "--require-gold-only",
         action="store_true",
@@ -268,18 +361,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sentence-transformer", default="sentence-transformers/LaBSE")
     p.add_argument("--vision-batch-size", type=int, default=4)
     p.add_argument("--text-batch-size", type=int, default=32)
+    # Split options — only meaningful when --hf-split validation
     split = p.add_mutually_exclusive_group()
     split.add_argument(
         "--replicate-for-train",
         action="store_true",
-        help="Set train and validation to deep copies of the built split (overfit / sanity check for train.py).",
+        help="(validation mode) Set train and validation to deep copies of the built split.",
     )
     split.add_argument(
         "--val-fraction",
         type=float,
         default=None,
         metavar="F",
-        help="Hold out fraction F in (0,1) for validation; train gets first (1-F) of rows (same order as parquet).",
+        help="(validation mode) Hold out fraction F in (0,1) for validation split.",
     )
     return p.parse_args()
 
@@ -288,71 +382,102 @@ def main() -> None:
     args = parse_args()
     device = torch.device(args.device) if args.device else get_default_device()
 
-    rows = load_voxpopuli_rows(
-        args.audio_cache_dir,
-        args.max_samples,
-        args.require_gold_only,
-        args.validation_parquet,
-    )
-    if not rows:
-        raise SystemExit("No usable rows (check text non-empty and filters).")
-
-    n = len(rows)
-    print(f"Built {n} rows on {device}")
-
+    # ------------------------------------------------------------------ models
     hubert_processor = AutoProcessor.from_pretrained(args.hubert_model)
     hubert_model_obj = HubertModel.from_pretrained(args.hubert_model).to(device)
     hubert_model_obj.eval()
-
     sentence_model = SentenceTransformer(args.sentence_transformer, device=str(device))
     vision_model, vision_preprocess = load_efficientnet_b7(device)
 
-    indices = list(range(n))
-    test_split = _build_split_dict(
-        rows,
-        indices,
-        hubert_processor,
-        hubert_model_obj,
-        sentence_model,
-        vision_model,
-        vision_preprocess,
-        device,
-        args.vision_batch_size,
-        args.text_batch_size,
-    )
+    def _embed(rows: list[dict]) -> dict:
+        indices = list(range(len(rows)))
+        return _build_split_dict(
+            rows, indices,
+            hubert_processor, hubert_model_obj,
+            sentence_model, vision_model, vision_preprocess,
+            device, args.vision_batch_size, args.text_batch_size,
+        )
 
-    if args.replicate_for_train:
+    # ------------------------------------------------------------------ data
+    if args.hf_split == "train":
+        # --- train split streamed from Hub -----------------------------------
+        train_rows = load_voxpopuli_train_rows(
+            args.train_audio_cache_dir,
+            args.max_samples,
+            args.require_gold_only,
+        )
+        if not train_rows:
+            raise SystemExit("No usable train rows (check filters).")
+        print(f"Embedding {len(train_rows)} train rows …")
+        train_split = _embed(train_rows)
+
+        # --- validation split from local parquet (reuse existing WAVs) ------
+        val_rows = load_voxpopuli_rows(
+            args.audio_cache_dir,
+            args.max_val_samples,
+            args.require_gold_only,
+            args.validation_parquet,
+        )
+        if not val_rows:
+            raise SystemExit("No usable validation rows.")
+        print(f"Embedding {len(val_rows)} validation rows …")
+        val_split = _embed(val_rows)
+
         total_dataset = {
-            "train": copy.deepcopy(test_split),
-            "validation": copy.deepcopy(test_split),
-            "test": copy.deepcopy(test_split),
+            "train": train_split,
+            "validation": val_split,
+            "test": val_split,
         }
-        split_msg = "train+validation+test (replicated, deep copy)"
-    elif args.val_fraction is not None:
-        vf = args.val_fraction
-        if not (0.0 < vf < 1.0):
-            raise SystemExit("--val-fraction must be strictly between 0 and 1")
-        k = int(n * (1.0 - vf))
-        if k < 1 or n - k < 1:
-            raise SystemExit(
-                f"--val-fraction={vf} with n={n} yields empty train or validation; "
-                "use more rows or a smaller fraction."
-            )
-        total_dataset = {
-            "train": _slice_split(test_split, 0, k),
-            "validation": _slice_split(test_split, k, n),
-            "test": copy.deepcopy(test_split),
-        }
-        split_msg = f"train={k} val={n - k} test={n} (full test retained)"
+        split_msg = f"train={len(train_rows)} val/test={len(val_rows)}"
+
     else:
-        total_dataset = {"test": test_split}
-        split_msg = "test only"
+        # --- legacy validation-only mode -------------------------------------
+        rows = load_voxpopuli_rows(
+            args.audio_cache_dir,
+            args.max_samples,
+            args.require_gold_only,
+            args.validation_parquet,
+        )
+        if not rows:
+            raise SystemExit("No usable rows (check text non-empty and filters).")
 
+        n = len(rows)
+        print(f"Built {n} validation rows on {device}")
+        full_split = _embed(rows)
+
+        if args.replicate_for_train:
+            total_dataset = {
+                "train": copy.deepcopy(full_split),
+                "validation": copy.deepcopy(full_split),
+                "test": copy.deepcopy(full_split),
+            }
+            split_msg = "train+validation+test (replicated, deep copy)"
+        elif args.val_fraction is not None:
+            vf = args.val_fraction
+            if not (0.0 < vf < 1.0):
+                raise SystemExit("--val-fraction must be strictly between 0 and 1")
+            k = int(n * (1.0 - vf))
+            if k < 1 or n - k < 1:
+                raise SystemExit(
+                    f"--val-fraction={vf} with n={n} yields empty train or validation; "
+                    "use more rows or a smaller fraction."
+                )
+            total_dataset = {
+                "train": _slice_split(full_split, 0, k),
+                "validation": _slice_split(full_split, k, n),
+                "test": copy.deepcopy(full_split),
+            }
+            split_msg = f"train={k} val={n - k} test={n} (full test retained)"
+        else:
+            total_dataset = {"test": full_split}
+            split_msg = "test only"
+
+    # ------------------------------------------------------------------ save
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "wb") as f:
         pickle.dump(total_dataset, f)
 
-    print(f"Wrote {args.output} ({split_msg}, n={n}, audio_path in split)")
+    print(f"Wrote {args.output} ({split_msg})")
 
 
 if __name__ == "__main__":
