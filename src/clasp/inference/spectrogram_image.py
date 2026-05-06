@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-from typing import Callable
+from typing import Callable, Literal
 
 import librosa
 import librosa.display
@@ -19,6 +19,8 @@ from torch import nn
 from torchvision.models import EfficientNet_B7_Weights, efficientnet_b7
 
 from clasp.inference.audio_preprocess import load_mono_16k_padded
+
+Pooling = Literal["mean", "multivector"]
 
 
 def spectrogram_pil_from_waveform(y: np.ndarray) -> Image.Image:
@@ -46,8 +48,14 @@ def efficientnet_embedding_from_waveform(
     device: torch.device,
     chunk_samples: int = 320_000,
     chunk_batch_size: int = 1,
+    *,
+    pooling: Pooling = "mean",
 ) -> torch.Tensor:
-    """Logits EfficientNet-B7 médios sobre janelas do sinal (áudio longo)."""
+    """EfficientNet-B7 classifier logits on fixed windows (long audio).
+
+    * ``mean``: one [1000] vector per file (mean over window logits).
+    * ``multivector``: ``[num_chunks, 1000]`` aligned with HuBERT chunking.
+    """
     y = np.asarray(y, dtype=np.float32).reshape(-1)
     if y.size == 0:
         y = np.zeros(16_000, dtype=np.float32)
@@ -57,7 +65,7 @@ def efficientnet_embedding_from_waveform(
         end = min(start + chunk_samples, y.size)
         chunks.append(y[start:end])
         start = end
-    logits_acc = None
+    all_logits: list[torch.Tensor] = []
     bs = max(1, int(chunk_batch_size))
     with torch.no_grad():
         for i in range(0, len(chunks), bs):
@@ -70,10 +78,16 @@ def efficientnet_embedding_from_waveform(
                 tensors.append(preprocess(pil))
             batch_t = torch.stack(tensors).to(device)
             logits = vision_model(batch_t).detach().cpu().float()
-            chunk_sum = logits.sum(dim=0)
-            logits_acc = chunk_sum if logits_acc is None else logits_acc + chunk_sum
-    assert logits_acc is not None
-    return logits_acc / len(chunks)
+            for row in range(logits.size(0)):
+                all_logits.append(logits[row].clone())
+    if not all_logits:
+        return torch.zeros(1000, dtype=torch.float32) if pooling == "mean" else torch.zeros(1, 1000, dtype=torch.float32)
+    stacked = torch.stack(all_logits, dim=0)
+    if pooling == "multivector":
+        return stacked
+    if pooling == "mean":
+        return torch.mean(stacked, dim=0)
+    raise ValueError(f"pooling must be 'mean' or 'multivector', got {pooling!r}")
 
 
 def load_efficientnet_b7(device: torch.device) -> tuple[nn.Module, Callable]:

@@ -43,6 +43,8 @@ Argumentos úteis:
 | `--hubert-model` | Default `facebook/hubert-large-ls960-ft` |
 | `--sentence-transformer` | Default `sentence-transformers/LaBSE` |
 | `--hits-k` | Ex.: `1,5,10,50` (igual ao modo matrix) |
+| `--spiral-audio-pooling` | `mean` (default): média global dos chunks; `max_sim`: max-similaridade por chunk (estilo ColBERT) |
+| `--spiral-chunk-samples` | Tamanho da janela em amostras 16 kHz (default `320000`); usado também para mapear `key_sentence_timestamp` → índice de chunk no modo `max_sim` |
 
 ## Avaliação com Docker
 

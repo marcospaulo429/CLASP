@@ -105,6 +105,19 @@ def parse_args():
     )
     parser.add_argument("--hubert-model", default="facebook/hubert-large-ls960-ft")
     parser.add_argument("--sentence-transformer", default="sentence-transformers/LaBSE")
+    parser.add_argument(
+        "--spiral-audio-pooling",
+        type=str,
+        default="mean",
+        choices=["mean", "max_sim"],
+        help="SPIRAL: mean = global mean over time chunks; max_sim = ColBERT-style max over chunks.",
+    )
+    parser.add_argument(
+        "--spiral-chunk-samples",
+        type=int,
+        default=320_000,
+        help="SPIRAL: window size in samples (16 kHz) for HuBERT/EfficientNet and timestamp→chunk map.",
+    )
     return parser.parse_args()
 
 
@@ -136,6 +149,8 @@ def main():
             sentence_model_id=args.sentence_transformer,
             device=device,
             hits_ks=_parse_hits_k(args.hits_k),
+            chunk_samples=args.spiral_chunk_samples,
+            audio_pooling=args.spiral_audio_pooling,
         )
         return
 

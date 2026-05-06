@@ -47,6 +47,18 @@ def main():
     )
     parser.add_argument("--hubert-model", default="facebook/hubert-large-ls960-ft")
     parser.add_argument("--sentence-transformer", default="sentence-transformers/LaBSE")
+    parser.add_argument(
+        "--spiral-audio-pooling",
+        default="mean",
+        choices=["mean", "max_sim"],
+        help="mean: one vector per file; max_sim: max over per-chunk fused vectors (ColBERT-style).",
+    )
+    parser.add_argument(
+        "--spiral-chunk-samples",
+        type=int,
+        default=320_000,
+        help="Window size in samples for chunking and timestamp→chunk mapping.",
+    )
     args = parser.parse_args()
 
     if not args.model.exists():
@@ -72,6 +84,8 @@ def main():
         sentence_model_id=args.sentence_transformer,
         device=dev,
         hits_ks=ks,
+        chunk_samples=args.spiral_chunk_samples,
+        audio_pooling=args.spiral_audio_pooling,
     )
 
 

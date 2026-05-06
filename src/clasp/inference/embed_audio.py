@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import numpy as np
 import torch
 from tqdm import tqdm
+from typing import Literal
 
 from clasp.inference.audio_preprocess import MIN_SAMPLES_16K, load_mono_16k_padded
+
+Pooling = Literal["mean", "multivector"]
 
 
 def hubert_numpy_waveform(
@@ -12,8 +17,14 @@ def hubert_numpy_waveform(
     device: torch.device,
     chunk_samples: int = 320_000,
     chunk_batch_size: int = 1,
+    *,
+    pooling: Pooling = "mean",
 ) -> torch.Tensor:
-    """HuBERT embedding for long mono 16 kHz audio: janelas fixas, média dos vetores por janela."""
+    """HuBERT embedding for long mono 16 kHz audio: fixed-size chunks.
+
+    * ``mean``: one vector per file (mean over chunk embeddings).
+    * ``multivector``: ``[num_chunks, dim]`` for max-sim / ColBERT-style use.
+    """
     y = np.asarray(waveform, dtype=np.float32).reshape(-1)
     if y.size == 0:
         y = np.zeros(MIN_SAMPLES_16K, dtype=np.float32)
@@ -43,7 +54,11 @@ def hubert_numpy_waveform(
             for j in range(means.size(0)):
                 chunk_vecs.append(means[j])
     stacked = torch.stack(chunk_vecs, dim=0)
-    return torch.mean(stacked, dim=0)
+    if pooling == "multivector":
+        return stacked
+    if pooling == "mean":
+        return torch.mean(stacked, dim=0)
+    raise ValueError(f"pooling must be 'mean' or 'multivector', got {pooling!r}")
 
 
 def hubert_audio_files(audio_file_list, hubert_processor, hubert_model, device):
