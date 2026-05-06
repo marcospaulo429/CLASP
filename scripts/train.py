@@ -34,8 +34,8 @@ def parse_args():
     parser.add_argument("--batch-size-train", type=int, default=32)
     parser.add_argument("--batch-size-val", type=int, default=16)
     parser.add_argument("--num-epochs", type=int, default=100)
-    parser.add_argument("--learning-rate", type=float, default=5e-6)
-    parser.add_argument("--temperature", type=float, default=float(np.log(0.07)))
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--temperature", type=float, default=float(np.log(1.0 / 0.07)))
     parser.add_argument("--in-features-text", type=int, default=1024)
     parser.add_argument("--in-features-image", type=int, default=1000)
     parser.add_argument("--mode", default="joint", choices=["joint", "audio", "image"])
@@ -77,6 +77,10 @@ def parse_args():
         default=None,
         help="W&B entity (team/user). Uses default entity if omitted.",
     )
+    parser.add_argument("--freeze-encoders", action="store_true",
+                        help="Freeze audio_seq and image_seq, train only the fusion head (mix_seq).")
+    parser.add_argument("--lr-step-size", type=int, default=10,
+                        help="StepLR step size in epochs (default 10).")
     return parser.parse_args()
 
 
@@ -160,6 +164,14 @@ def main():
     if args.init_checkpoint is not None:
         _load_init_weights(model, args.init_checkpoint, device)
 
+    if args.freeze_encoders:
+        for param in model.audio_seq.parameters():
+            param.requires_grad = False
+        for param in model.image_seq.parameters():
+            param.requires_grad = False
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Encoders frozen — training only mix_seq ({trainable:,} params)")
+
     best_model = train_the_model(
         model=model,
         train_dataloader=train_loader,
@@ -172,6 +184,7 @@ def main():
         patience=args.patience,
         no_early_stopping=args.no_early_stopping,
         wandb_run=wandb_run,
+        lr_step_size=args.lr_step_size,
     )
     torch.save(best_model, args.save_path)
     print(f"Saved model to {args.save_path}")

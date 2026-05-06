@@ -155,6 +155,10 @@ Spoken-SQuAD_audio.zip
 *.pt
 data/datasets/spoken_squad
 
+# Noise data
+data/noise_sources
+
+
 # Environment variables
 .env
 .env.local

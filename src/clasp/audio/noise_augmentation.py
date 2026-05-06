@@ -5,8 +5,38 @@ Utilities to add white noise, ambient noise, and reverberation to audio samples.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import scipy.signal
+
+
+def scan_esc50_files(esc50_dir: str | Path) -> list[Path]:
+    """Return sorted list of WAV paths from an ESC-50 audio directory."""
+    esc50_dir = Path(esc50_dir)
+    candidates = [esc50_dir / "audio", esc50_dir]
+    for d in candidates:
+        files = sorted(d.glob("*.wav"))
+        if files:
+            return files
+    raise FileNotFoundError(
+        f"No WAV files found in {esc50_dir} or {esc50_dir / 'audio'}. "
+        "Run scripts/download_esc50.sh first."
+    )
+
+
+def load_esc50_clip(esc50_files: list[Path], target_sr: int = 16000) -> np.ndarray:
+    """Load a random ESC-50 clip and resample to target_sr (ESC-50 is 44100 Hz)."""
+    import soundfile as sf
+
+    wav_path = esc50_files[np.random.randint(len(esc50_files))]
+    audio, sr = sf.read(str(wav_path), dtype="float32")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    if sr != target_sr:
+        n_samples = int(len(audio) * target_sr / sr)
+        audio = scipy.signal.resample(audio, n_samples)
+    return audio.astype(np.float32)
 
 
 def add_white_noise(audio: np.ndarray, snr_db: float = 20.0) -> np.ndarray:

@@ -1,5 +1,6 @@
 import gc
 from copy import deepcopy
+from pathlib import Path
 from time import time
 
 import matplotlib.pyplot as plt
@@ -23,6 +24,7 @@ def train_the_model(
     patience=10,
     no_early_stopping=False,
     wandb_run=None,
+    lr_step_size=10,
 ):
     del delta  # kept for signature parity with notebook
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -55,7 +57,7 @@ def train_the_model(
                 eval_loss += loss.item()
                 description = "Validation" if not test_mode else "Test"
                 pbar.set_description(f"{description} Loss: {loss.item():.4f}")
-        return eval_loss
+        return eval_loss / len(dataloader)
 
     def l2_normalize(x, dim=-1):
         return x / x.norm(2, dim=dim, keepdim=True)
@@ -90,7 +92,7 @@ def train_the_model(
                 train_loss += loss.item()
                 pbar.set_description(f"Train Loss: {loss.item():.4f}")
 
-        return train_loss
+        return train_loss / len(dataloader)
 
     def train(
         model,
@@ -111,7 +113,7 @@ def train_the_model(
         epoch_num = epochs
         best_model = None
 
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.4)
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=lr_step_size, gamma=0.4)
 
         for epoch in range(epochs):
             gc.collect()
@@ -167,14 +169,21 @@ def train_the_model(
 
         return train_losses, val_losses, epoch_num, best_model
 
-    def plot_loss(loss, epoch_num, label):
+    def plot_losses(train_losses, val_losses, epoch_num, save_path):
+        import matplotlib
+        matplotlib.use("Agg")  # headless backend, no display needed
         ls_epoch = [_ + 1 for _ in range(epoch_num)]
-        plt.plot(ls_epoch, loss, color="r", label=label)
+        plt.figure()
+        plt.plot(ls_epoch, train_losses, color="r", label="train")
+        plt.plot(ls_epoch, val_losses, color="b", label="validation")
         plt.title("Loss plot")
         plt.ylabel("Loss")
         plt.xlabel("epoch")
         plt.legend()
-        plt.show()
+        plot_path = Path(save_path).with_suffix(".loss.png")
+        plt.savefig(plot_path)
+        plt.close()
+        print(f"Loss plot saved to {plot_path}")
 
     train_losses, val_losses, epoch_num, best_model = train(
         model,
@@ -188,7 +197,6 @@ def train_the_model(
         no_early_stopping,
         wandb_run,
     )
-    plot_loss(train_losses, epoch_num, "train")
-    plot_loss(val_losses, epoch_num, "validation")
+    plot_losses(train_losses, val_losses, epoch_num, model_path_save)
     return best_model
 
