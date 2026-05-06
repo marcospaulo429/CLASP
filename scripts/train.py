@@ -9,6 +9,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+try:
+    import wandb as _wandb_module
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _WANDB_AVAILABLE = False
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -55,6 +61,22 @@ def parse_args():
             "Does not restore optimizer or epoch — fusion weights only."
         ),
     )
+    # ------------------------------------------------------------------ wandb
+    parser.add_argument(
+        "--wandb-project",
+        default=None,
+        help="W&B project name. If omitted, wandb logging is disabled.",
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        default=None,
+        help="W&B run name (auto-generated if omitted).",
+    )
+    parser.add_argument(
+        "--wandb-entity",
+        default=None,
+        help="W&B entity (team/user). Uses default entity if omitted.",
+    )
     return parser.parse_args()
 
 
@@ -85,6 +107,35 @@ def _load_init_weights(model: nn.Module, checkpoint_path: Path, device: torch.de
 def main():
     args = parse_args()
     device = get_default_device()
+
+    # ------------------------------------------------------------------ wandb
+    wandb_run = None
+    if args.wandb_project:
+        if not _WANDB_AVAILABLE:
+            raise SystemExit(
+                "--wandb-project specified but 'wandb' is not installed. "
+                "Install with: pip install wandb"
+            )
+        wandb_run = _wandb_module.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            entity=args.wandb_entity,
+            config={
+                "dataset_path": str(args.dataset_path),
+                "mode": args.mode,
+                "num_epochs": args.num_epochs,
+                "learning_rate": args.learning_rate,
+                "temperature": args.temperature,
+                "batch_size_train": args.batch_size_train,
+                "batch_size_val": args.batch_size_val,
+                "patience": args.patience,
+                "no_early_stopping": args.no_early_stopping,
+                "init_checkpoint": str(args.init_checkpoint) if args.init_checkpoint else None,
+                "in_features_text": args.in_features_text,
+                "in_features_image": args.in_features_image,
+            },
+        )
+        print(f"W&B run: {wandb_run.url}")
 
     with open(args.dataset_path, "rb") as f:
         total_dataset = pickle.load(f)
@@ -120,9 +171,13 @@ def main():
         temperature=args.temperature,
         patience=args.patience,
         no_early_stopping=args.no_early_stopping,
+        wandb_run=wandb_run,
     )
     torch.save(best_model, args.save_path)
     print(f"Saved model to {args.save_path}")
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":

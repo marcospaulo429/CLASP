@@ -22,6 +22,7 @@ def train_the_model(
     temperature=np.log(0.07),
     patience=10,
     no_early_stopping=False,
+    wandb_run=None,
 ):
     del delta  # kept for signature parity with notebook
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -101,6 +102,7 @@ def train_the_model(
         temperature,
         patience_inner,
         no_early_stopping_inner,
+        wandb_run_inner,
     ):
         train_losses = []
         val_losses = []
@@ -124,12 +126,22 @@ def train_the_model(
             val_losses.append(val_loss)
 
             end_time = time()
-            print(f"Epoch {epoch + 1} finished in {end_time - start_time:.2f}s")
+            epoch_duration = end_time - start_time
+            print(f"Epoch {epoch + 1} finished in {epoch_duration:.2f}s")
             print(
                 f"[Epoch {epoch + 1}]\t"
                 f"Train Loss: {train_loss:.6f}\t"
                 f"Validation Loss: {val_loss:.6f}"
             )
+
+            if wandb_run_inner is not None:
+                wandb_run_inner.log({
+                    "train/loss": train_loss,
+                    "val/loss": val_loss,
+                    "epoch": epoch + 1,
+                    "epoch_duration_s": epoch_duration,
+                    "lr": scheduler.get_last_lr()[0],
+                })
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -142,6 +154,8 @@ def train_the_model(
                 print(
                     f"Early stopping after {patience_inner} epochs without improvement in validation loss."
                 )
+                if wandb_run_inner is not None:
+                    wandb_run_inner.log({"early_stopping_epoch": epoch + 1})
                 with open("stopped_epoch.txt", "w", encoding="utf-8") as f:
                     print(f"Stopped at epoch: {epoch + 1}")
                     f.write(f"Stopped at epoch: {epoch + 1}\n")
@@ -172,6 +186,7 @@ def train_the_model(
         temperature,
         patience,
         no_early_stopping,
+        wandb_run,
     )
     plot_loss(train_losses, epoch_num, "train")
     plot_loss(val_losses, epoch_num, "validation")
