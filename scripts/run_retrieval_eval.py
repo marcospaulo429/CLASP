@@ -16,6 +16,7 @@ from clasp.evaluation.metrics import (
     evaluate_matrix,
     evaluate_matrix_by_source,
     evaluate_model_on_candidates,
+    evaluate_model_on_paragraph_groups,
 )
 from clasp.evaluation.ranking_metrics import compute_ranking_metrics, similarity_matrix_to_rows
 from clasp.evaluation.retrieval_plots import save_retrieval_plot
@@ -28,9 +29,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run CLASP retrieval evaluation.")
     parser.add_argument(
         "--mode",
-        choices=["candidate", "matrix", "spiral"],
+        choices=["candidate", "matrix", "spiral", "paragraph_grouped"],
         default="candidate",
-        help="spiral: JSONL + on-the-fly embeddings; candidate/matrix: pickle dataset",
+        help=(
+            "spiral: JSONL + on-the-fly embeddings. "
+            "candidate/matrix: pickle dataset (1 amostra por linha). "
+            "paragraph_grouped: pickle 'chunked' c/ paragraph_id; max-sim por par\u00e1grafo."
+        ),
     )
     parser.add_argument(
         "--dataset-path",
@@ -157,6 +162,10 @@ def main():
     with open(args.dataset_path, "rb") as f:
         total_dataset = pickle.load(f)
 
+    # support PKLs that use 'validation' instead of 'test'
+    if "test" not in total_dataset and "validation" in total_dataset:
+        total_dataset["test"] = total_dataset["validation"]
+
     if args.mode == "candidate":
         if args.plot_out is not None:
             print(
@@ -177,6 +186,28 @@ def main():
         test_loader = DataLoader(dataset=test_dataset, batch_size=args.batch_size, shuffle=False)
         model = load_model(args.model_path, device)
         results = evaluate_model_on_candidates(model, test_loader, device, threshold=args.threshold)
+        print(results)
+        return
+
+    if args.mode == "paragraph_grouped":
+        if not args.model_path:
+            raise ValueError("--model-path is required for paragraph_grouped mode")
+        if "paragraph_id" not in total_dataset["test"]:
+            raise KeyError(
+                "PKL 'test/validation' split does not contain 'paragraph_id'. "
+                "Re-build with --pooling-mode chunked."
+            )
+        model = load_model(args.model_path, device)
+        ks = _parse_hits_k(args.hits_k)
+        results = evaluate_model_on_paragraph_groups(
+            model,
+            total_dataset["test"],
+            device,
+            audio_key=args.audio_key,
+            text_key=args.text_key,
+            ks=ks,
+            batch_size=max(1, args.batch_size * 16),
+        )
         print(results)
         return
 

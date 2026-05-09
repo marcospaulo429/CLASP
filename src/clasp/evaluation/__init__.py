@@ -2,6 +2,7 @@ from clasp.evaluation.metrics import (
     evaluate_matrix,
     evaluate_matrix_by_source,
     evaluate_model_on_candidates,
+    evaluate_model_on_paragraph_groups,
 )
 from clasp.evaluation.ranking_metrics import (
     compute_ranking_metrics,
@@ -15,6 +16,7 @@ __all__ = [
     "evaluate_matrix",
     "evaluate_matrix_by_source",
     "evaluate_model_on_candidates",
+    "evaluate_model_on_paragraph_groups",
     "grouped_ranking_summary",
     "save_grouped_hits_plot",
     "save_retrieval_plot",
