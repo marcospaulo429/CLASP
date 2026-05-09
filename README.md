@@ -3,503 +3,71 @@
 [![arXiv](https://img.shields.io/badge/arXiv-Paper-<COLOR>.svg)](https://arxiv.org/abs/2412.13071)
 [![Website](https://img.shields.io/website?url=https%3A%2F%2Fmultimodalrag.github.io%2F)](https://clasp1.github.io/)
 
-This repository includes the original implementation of
-[CLASP: Contrastive Language-Speech Pretraining for Multilingual Multimodal Information Retrieval](https://arxiv.org/abs/2412.13071)
-(published at [ECIR 2025](https://link.springer.com/chapter/10.1007/978-3-031-88717-8_2))
-by Mohammad Mahdi Abootorabi and Ehsaneddin Asgari.
+Original implementation of [CLASP: Contrastive Language-Speech Pretraining for Multilingual Multimodal Information Retrieval](https://arxiv.org/abs/2412.13071) (ECIR 2025).
 
-[Models](https://huggingface.co/llm-lab/CLASP) |
-[Proposed Dataset](https://huggingface.co/datasets/llm-lab/SpeechBrown) |
-[Springer Link](https://link.springer.com/chapter/10.1007/978-3-031-88717-8_2) |
-[ACM Digital Library](https://dl.acm.org/doi/10.1007/978-3-031-88717-8_2)
-
-## Notebook-Preserving Modularization
-
-The notebook code has been extracted into a modular Python layout under `src/` and `scripts/`.
-This refactor is intentionally **non-invasive**:
-
-- Notebooks in `notebooks/` remain unchanged.
-- No new algorithmic behavior was introduced.
-- Training, inference, and retrieval/eval logic is organized into reusable modules.
-
-## Project Structure
-
-```text
-.
-├── pyproject.toml
-├── uv.lock
-├── notebooks/
-│   ├── Training-Evaluation.ipynb
-│   ├── clasp-inference.ipynb
-│   └── ...
-├── scripts/
-│   ├── train.py
-│   ├── run_inference.py
-│   ├── run_retrieval_eval.py
-│   ├── build_speechbrown_pkl.py
-│   └── scan_speechbrown_audio.py
-└── src/
-    └── clasp/
-        ├── config/
-        │   └── settings.py
-        ├── data/
-        │   ├── datasets.py
-        │   └── speechbrown_paths.py
-        ├── models/
-        │   └── fusion.py
-        ├── train/
-        │   └── trainer.py
-        ├── inference/
-        │   ├── audio_preprocess.py
-        │   ├── embed_audio.py
-        │   ├── spectrogram_image.py
-        │   └── pipeline.py
-        ├── retrieval/
-        │   └── search.py
-        └── evaluation/
-            └── metrics.py
-```
-
-## Notebook -> Module Mapping
-
-- `Training-Evaluation.ipynb`
-  - model classes -> `src/clasp/models/fusion.py`
-  - `CusDataset`, `TestDataset`, test metadata sampling -> `src/clasp/data/datasets.py`
-  - `train_the_model` and training loop -> `src/clasp/train/trainer.py`
-  - retrieval/evaluation metrics (`Hits@1`, `MRR`, `meanR`) -> `src/clasp/evaluation/metrics.py`
-- `clasp-inference.ipynb`
-  - HuBERT audio embedding extraction -> `src/clasp/inference/embed_audio.py`
-  - spectrogram + EfficientNet -> `src/clasp/inference/spectrogram_image.py`
-  - model loading and top-1 retrieval flow -> `src/clasp/inference/pipeline.py`
-  - cosine ranking helpers -> `src/clasp/retrieval/search.py`
-
-## Recommended data layout
-
-Create these folders at the repository root (they are not committed by default if you add them to `.gitignore`). Large weights and datasets stay local.
-
-```text
-data/
-  raw/                 # optional: original audio, metadata
-  datasets/            # total_dataset_v*.pkl (aggregated splits)
-models/
-  checkpoints/         # *.pt — trained or downloaded CLASP weights
-artifacts/
-  embeddings/          # *.pt — stacked tensors or lists for run_inference.py
-```
-
-Typical CLI paths:
-
-| Flag | Role | Example path |
-|------|------|----------------|
-| `--dataset-path` | Aggregated pickle | `data/datasets/total_dataset_v11.pkl` |
-| `--save-path` | Output checkpoint after training | `models/checkpoints/my_clasp.pt` |
-| `--init-checkpoint` | Optional fusion weights before training (`train.py` only) | `models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt` |
-| `--model-path` | Load checkpoint (inference / eval candidate) | `models/checkpoints/clasp.pt` |
-| `--audio-embeddings-path` | Audio-side vectors for inference | `artifacts/embeddings/audio.pt` |
-| `--image-embeddings-path` | Image/spectrogram-side vectors | `artifacts/embeddings/image.pt` |
-| `--text-embeddings-path` | Text encoder vectors | `artifacts/embeddings/text.pt` |
-
-### Where to put checkpoints
-
-| Command | Argument | What it is | Suggested folder |
-|---------|----------|------------|------------------|
-| `scripts/train.py` | `--save-path` | Trained model state | `models/checkpoints/` |
-| `scripts/train.py` | `--init-checkpoint` | Optional starting fusion `.pt` (same arch as `HubertLabseConcat`; not optimizer resume) | `models/checkpoints/` |
-| `scripts/run_inference.py` | `--model-path` | CLASP `.pt` (trained or from [Hugging Face](https://huggingface.co/llm-lab/CLASP)) | `models/checkpoints/` |
-| `scripts/run_retrieval_eval.py` | `--model-path` | Same (required for `--mode candidate` only) | `models/checkpoints/` |
-
-Download official weights from [Models](https://huggingface.co/llm-lab/CLASP), place the file under `models/checkpoints/` (for example `models/checkpoints/clasp.pt`), and pass that path to `--model-path` or copy the path into `--save-path` when saving your own training run.
-
-For **warm-start training** (`train.py` `--init-checkpoint`), use the **concat + contrastive** fusion checkpoint **`CLASP_Concat_Final_Fusion_Encoder.pt`** (matches `HubertLabseConcat` in this repo). Do not use `CLASP_Gating.pt` or LASP variants for that flag unless you change the training architecture. Example download:
-
-```bash
-huggingface-cli download llm-lab/CLASP CLASP_Concat_Final_Fusion_Encoder.pt --local-dir models/checkpoints
-# or:
-# curl -L -o models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt \
-#   https://huggingface.co/llm-lab/CLASP/resolve/main/CLASP_Concat_Final_Fusion_Encoder.pt
-```
-
-`--init-checkpoint` loads **fusion weights only** (strict `state_dict` match); it does **not** resume optimizer, scheduler, or epoch counters.
-
-### Where to put embedding `.pt` files (inference only)
-
-| Command | Arguments | What they are | Suggested folder |
-|---------|-----------|---------------|------------------|
-| `scripts/run_inference.py` | `--audio-embeddings-path`, `--image-embeddings-path`, `--text-embeddings-path` | PyTorch-saved tensors or lists of tensors, **aligned by row index** | `artifacts/embeddings/` |
-
-`run_inference.py` loads each file with `torch.load` and optionally `torch.stack`s lists. You are responsible for producing the same alignment as in `clasp-inference.ipynb` (same ordering of samples).
-
-## Environment with `uv`
-
-Dependencies are declared in [`pyproject.toml`](pyproject.toml). Use [uv](https://docs.astral.sh/uv/) to create a reproducible environment.
-
-1. Install uv (see the official installer for your OS).
-2. From the repository root:
-
-```bash
-uv sync
-```
-
-This creates `.venv` and installs the locked dependencies (`uv.lock`).
-
-3. Quick sanity check:
-
-```bash
-uv run python -m compileall src scripts
-```
-
-4. Run every script below with `uv run` so they use that environment (examples use the recommended paths).
-
-Alternative without uv: `pip install -e .` or install the packages listed under `[project] dependencies` in `pyproject.toml`.
-
-## SpeechBrown → total_dataset.pkl (real data)
-
-Optional dependencies for building a pickle from [SpeechBrown](https://huggingface.co/datasets/llm-lab/SpeechBrown) metadata and local audio:
-
-```bash
-uv sync --extra realdata
-```
-
-**Prerequisite:** download SpeechBrown (for example `global_metadata.json` and `dataset_part1.zip` via the Hugging Face dataset page or CLI), unzip under your **dataset root** so the WAV files exist. Metadata often lists `dataset/part1/audios/...` while the zip unpacks to `dataset_part1/audios/...`; `build_speechbrown_pkl.py` tries both layouts.
-
-Quick test build (caps rows before splitting):
-
-```bash
-uv run python scripts/build_speechbrown_pkl.py \
-  --metadata-json path/to/global_metadata.json \
-  --dataset-root path/to/folder_that_resolves_json_paths \
-  --output data/datasets/total_dataset_real.pkl \
-  --max-samples 120
-```
-
-**Audio quality:** HuBERT crashes on near-empty waveforms. Loading uses mono conversion, safe normalization, and pads short clips to 1s at 16 kHz (`audio_preprocess.py`). To **exclude** files shorter than a threshold before building (faster than padding edge cases), pass e.g. `--min-audio-seconds 0.5`. To **audit** bad rows: `uv run python scripts/scan_speechbrown_audio.py --metadata-json ... --dataset-root ... --min-audio-seconds 0.5 --output-bad bad_audio.json`.
-
-**Note:** `run_retrieval_eval.py` defaults to `--num-candidates 100`. The test split must contain enough samples for that (roughly, test size should exceed `num-candidates`), or pass a smaller `--num-candidates` (for a tiny build, use at most `test_size - 1`).
-
-Evaluate with the generated pickle and a CLASP checkpoint:
-
-```bash
-uv run python scripts/run_retrieval_eval.py \
-  --dataset-path data/datasets/total_dataset_real.pkl \
-  --mode candidate \
-  --model-path models/checkpoints/clasp.pt \
-  --audio-key hubert-emb \
-  --text-key text \
-  --threshold 0.5 \
-  --num-candidates 10
-```
-
-Point `--model-path` at your CLASP `.pt` (for example a file downloaded from [Models](https://huggingface.co/llm-lab/CLASP)).
-
-## VoxPopuli (English, validation) → same pickle shape as Spoken-SQuAD
-
-Use [facebook/voxpopuli](https://huggingface.co/datasets/facebook/voxpopuli) config **`en`**, split **`validation`** (there is no `dev` split on the Hub). By default the builder writes a pickle with only **`test`**, containing `hubert-emb`, `text`, `image`, and **`audio_path`** (aligned rows) so `run_noise_robustness_eval.py` can load WAV paths without Spoken-SQuAD JSON. For [`scripts/train.py`](scripts/train.py), pass **`--replicate-for-train`** (same split in `train`, `validation`, and `test`) or **`--val-fraction F`** (first `1-F` rows → train, rest → validation, full data kept under `test`).
-
-**Download scope:** `build_voxpopuli_pkl.py` does **not** call `load_dataset("facebook/voxpopuli", "en", …)` on the full builder (which would pull every `en/train-*.parquet`). It downloads only **`en/validation-00000-of-00001.parquet`** via `hf_hub_download`, then opens it with `load_dataset("parquet", …)` (no streaming). For a fully offline machine, pass **`--validation-parquet /path/to/en/validation-00000-of-00001.parquet`** after copying that file from the Hub or another cache.
-
-**Audio decoding:** the script casts the `audio` column to `Audio(decode=False)` and reads WAV bytes or paths with `soundfile`, so you do **not** need to install **`torchcodec`** (which newer `datasets` would otherwise require when decoding `Audio` on the fly).
-
-Install extras (HF `datasets`, LaBSE, EfficientNet image stack):
-
-```bash
-uv sync --extra voxpopuli
-```
-
-Build (start with `--max-samples` for a quick dev subset; full `en` validation is large):
-
-```bash
-uv run python scripts/build_voxpopuli_pkl.py \
-  --output data/datasets/total_dataset_voxpopuli_en_validation.pkl \
-  --audio-cache-dir data/datasets/voxpopuli_en_validation_wav \
-  --max-samples 500
-```
-
-Train on the same validation embeddings (overfit / sanity check): add **`--replicate-for-train`** to the same command (drop or raise `--max-samples` if you want the full split). Alternatively **`--val-fraction 0.1`** keeps 90% / 10% row-disjoint train/validation slices in original order.
-
-```bash
-uv run python scripts/build_voxpopuli_pkl.py \
-  --output data/datasets/total_dataset_voxpopuli_en_train.pkl \
-  --audio-cache-dir data/datasets/voxpopuli_en_validation_wav \
-  --replicate-for-train \
-  --max-samples 2000
-
-uv run python scripts/train.py \
-  --dataset-path data/datasets/total_dataset_voxpopuli_en_train.pkl \
-  --save-path models/checkpoints/clasp_vox_val_overfit.pt \
-  --num-epochs 80 \
-  --patience 999 \
-  --no-early-stopping
-```
-
-Optional: `--require-gold-only` keeps rows with `is_gold_transcript == True`. Optional: `--validation-parquet` for a local validation parquet (offline).
-
-**Retrieval:** same as other pickles—populate `clasp_emb` on the test dict if you use matrix mode, then:
-
-```bash
-uv run python scripts/run_retrieval_eval.py \
-  --dataset-path data/datasets/total_dataset_voxpopuli_en_validation.pkl \
-  --mode matrix \
-  --emb-key clasp_emb \
-  --text-key text \
-  --threshold 0.5 \
-  --num-candidates 10
-```
-
-For **candidate** mode, pass `--model-path` and use `--audio-key hubert-emb` as usual. Matrix mode needs enough test rows vs `--num-candidates` (see note above).
-
-**Noise robustness:** if `test['audio_path']` exists and matches `len(test['text'])`, paths are taken from the pickle automatically (no `--train-json` / `--wav-dir`). To fail fast when you expect that layout, add `--audio-paths-from-pickle`:
-
-```bash
-uv run python scripts/run_noise_robustness_eval.py \
-  --dataset-path data/datasets/total_dataset_voxpopuli_en_validation.pkl \
-  --model-path models/checkpoints/clasp.pt \
-  --audio-paths-from-pickle \
-  --num-candidates 10 \
-  --max-test-samples 100
-```
-
-### Docker (VoxPopuli builder + training)
-
-[`docker-compose.yml`](docker-compose.yml) builds from [`docker/Dockerfile.arm64`](docker/Dockerfile.arm64) or [`docker/Dockerfile.amd64`](docker/Dockerfile.amd64) (see [`docker/README.md`](docker/README.md)) with **`UV_EXTRA_GROUPS=voxpopuli`** so `datasets`, LaBSE, and torchvision are installed (same extra as `uv sync --extra voxpopuli`). Rebuild after changing dependencies:
-
-```bash
-docker compose build clasp-arm64   # or clasp-amd64 on x86_64
-```
-
-Inside the container, Hugging Face downloads use the default cache under `/root/.cache/huggingface`. For large runs, mount a host cache, e.g. `-v "$HOME/.cache/huggingface:/root/.cache/huggingface"`, and set `HF_TOKEN` if the Hub requires authentication.
-
-```bash
-docker run --rm -it --gpus all \
-  -v "$(pwd)/data:/app/data" \
-  -v "$(pwd)/models:/app/models" \
-  -v "$(pwd)/artifacts:/app/artifacts" \
-  -v "$(pwd)/scripts:/app/scripts" \
-  -v "$(pwd)/src:/app/src" \
-  -e HF_TOKEN \
-  -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
-  -w /app clasp:arm64 \
-  uv run python scripts/build_voxpopuli_pkl.py --replicate-for-train --max-samples 500 \
-    --output data/datasets/total_dataset_voxpopuli_en_train.pkl
-
-docker run --rm -it --gpus all \
-  -v "$(pwd)/data:/app/data" \
-  -v "$(pwd)/models:/app/models" \
-  -v "$(pwd)/scripts:/app/scripts" \
-  -v "$(pwd)/src:/app/src" \
-  -w /app clasp:arm64 \
-  uv run python scripts/train.py \
-    --dataset-path data/datasets/total_dataset_voxpopuli_en_train.pkl \
-    --save-path models/checkpoints/clasp_vox.pt \
-    --no-early-stopping --patience 999 --num-epochs 50
-```
-
-Place a downloaded **`CLASP_Concat_Final_Fusion_Encoder.pt`** on the host under `models/checkpoints/` (same volume mount) and add **`--init-checkpoint models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt`** to that `train.py` line to warm-start from the official concat fusion.
-
-Use **`clasp-amd64`** on x86_64 hosts. If `docker compose run` does not support `--gpus` on your install, use `docker run` as above.
-
-## End-to-end workflow
-
-Follow these steps in order. Steps 1–2 depend on whether you already have the aggregated dataset and vectors.
-
-### Step 1 — Aggregated dataset (`total_dataset_*.pkl`)
-
-Training (`train.py`) and retrieval evaluation in **candidate** mode expect a pickle with top-level keys `train`, `validation`, and `test`. Each split is a dict that includes at least:
-
-- `hubert-emb` (or `audio` if you configure `--audio-key` that way) — audio-side inputs to the fusion model
-- `text` — text embeddings for contrastive training / queries
-- `image` — image/spectrogram-side inputs to the fusion model
-
-This matches the structure built in `Training-Evaluation.ipynb`. Place the file under `data/datasets/` (for example `data/datasets/total_dataset_v11.pkl`).
-
-### Step 2 — Embeddings: two cases
-
-**Case A — Vectors only inside the pickle (typical for train + candidate eval)**  
-If `hubert-emb`, `text`, and `image` are already filled in the pickle, you **do not** need separate `.pt` files for `train.py` or `run_retrieval_eval.py --mode candidate`. Retrieval uses audio-derived representations through those keys.
-
-**Case B — Separate `.pt` files for `run_inference.py`**  
-`run_inference.py` does **not** read the big pickle; it needs three files:
-
-1. Audio HuBERT-style embeddings (same logic as `hubert_audio_files` in `src/clasp/inference/embed_audio.py`).
-2. Image/spectrogram embeddings (your notebook pipeline).
-3. Text embeddings (e.g. sentence encoder).
-
-Save them as `artifacts/embeddings/audio.pt`, `image.pt`, `text.pt` (or any names), then pass those paths to the three `--*-embeddings-path` flags. Indices must match across the three tensors.
-
-To build audio vectors in code, load HuBERT with `transformers`, then call `hubert_audio_files(file_list, hubert_processor, hubert_model, device)` from `clasp.inference.embed_audio`, stack or save the list, and `torch.save` to disk. The reference notebook `notebooks/clasp-inference.ipynb` shows the full pipeline including fusion.
-
-### Step 3 — Train (optional; or use a released checkpoint)
-
-Writes the best checkpoint to `--save-path` (for example `models/checkpoints/my_model.pt`).
-
-### Step 4 — Inference (optional)
-
-Loads `--model-path` and the three embedding `.pt` files; prints top-1 match for `--sample-index`.
-
-### Step 5 — Retrieval evaluation
-
-- **Candidate mode** (`--mode candidate`): uses the test split inside the pickle, samples negative candidates, runs the loaded `--model-path`, reports metrics. No precomputed `clasp_emb` required.
-- **Matrix mode** (`--mode matrix`): builds a full similarity matrix between `total_dataset['test'][emb-key]` and `total_dataset['test'][text-key]`. The default `--emb-key` is `clasp_emb`. That list must **already exist** on the test dict (filled by running the fusion model over the test split, as in `Training-Evaluation.ipynb`). If the key is missing or empty, matrix mode will fail.
-
-### Matrix mode: `emb-key` and `clasp_emb`
-
-For `--mode matrix`, `--emb-key` names the field on `total_dataset['test']` used as **query** embeddings (one row per test item). The script compares them to every column in `total_dataset['test'][text-key]`. Typical workflow from the paper/notebooks:
-
-1. Load your trained checkpoint.
-2. Run forward on the **test** split to append fused embeddings into `total_dataset['test']['clasp_emb']` (or another key you choose).
-3. Save the updated pickle or keep it in memory, then run `run_retrieval_eval.py --mode matrix --emb-key clasp_emb` (or your key).
-
-Per-source metrics add `--by-source` and use the `source` field on the test split.
-
-## How to run (with `uv`)
-
-All examples assume paths under the recommended layout. Adjust filenames as needed.
-
-### 1) Training
-
-Checkpoint output: **`--save-path`** → place under `models/checkpoints/`.
-
-```bash
-uv run python scripts/train.py \
-  --dataset-path data/datasets/total_dataset_v11.pkl \
-  --save-path models/checkpoints/my_clasp.pt \
-  --audio-key hubert-emb \
-  --text-key text \
-  --num-epochs 100 \
-  --learning-rate 5e-6
-```
-
-**Warm start from a pretrained fusion** (e.g. [llm-lab/CLASP](https://huggingface.co/llm-lab/CLASP) `CLASP_Concat_Final_Fusion_Encoder.pt` under `models/checkpoints/`): pass **`--init-checkpoint`**. Defaults `--in-features-text 1024`, `--in-features-image 1000`, and `--mode joint` must match the checkpoint you load.
-
-```bash
-uv run python scripts/train.py \
-  --dataset-path data/datasets/total_dataset_v11.pkl \
-  --save-path models/checkpoints/my_clasp.pt \
-  --init-checkpoint models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt \
-  --audio-key hubert-emb \
-  --text-key text \
-  --num-epochs 100 \
-  --learning-rate 5e-6
-```
-
-Docker example (same bind mounts as other scripts): add `--init-checkpoint models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt` to the `uv run python scripts/train.py ...` line.
-
-### 2) Inference (single text query index against paired embedding rows)
-
-Checkpoints: **`--model-path`** → `models/checkpoints/`.  
-Vectors: three **`--*-embeddings-path`** → `artifacts/embeddings/`.
-
-```bash
-uv run python scripts/run_inference.py \
-  --model-path models/checkpoints/clasp.pt \
-  --audio-embeddings-path artifacts/embeddings/audio.pt \
-  --image-embeddings-path artifacts/embeddings/image.pt \
-  --text-embeddings-path artifacts/embeddings/text.pt \
-  --sample-index 0
-```
-
-### 3) Retrieval evaluation — candidate mode (notebook-style)
-
-Requires **`--model-path`** under `models/checkpoints/` and **`--dataset-path`** under `data/datasets/`.
-
-```bash
-uv run python scripts/run_retrieval_eval.py \
-  --dataset-path data/datasets/total_dataset_v11.pkl \
-  --mode candidate \
-  --model-path models/checkpoints/clasp.pt \
-  --audio-key hubert-emb \
-  --text-key text \
-  --threshold 0.5 \
-  --num-candidates 100
-```
-
-### 4) Retrieval evaluation — matrix mode
-
-Requires `total_dataset['test'][emb-key]` to be populated **before** running (see “Matrix mode” above). Default `emb-key` is `clasp_emb`.
-
-```bash
-uv run python scripts/run_retrieval_eval.py \
-  --dataset-path data/datasets/total_dataset_v11.pkl \
-  --mode matrix \
-  --emb-key clasp_emb \
-  --text-key text \
-  --threshold 0.5
-```
-
-Per-source metrics:
-
-```bash
-uv run python scripts/run_retrieval_eval.py \
-  --dataset-path data/datasets/total_dataset_v11.pkl \
-  --mode matrix \
-  --emb-key clasp_emb \
-  --text-key text \
-  --threshold 0.5 \
-  --by-source
-```
-
-### Ranking metrics and plot (matrix mode)
-
-After the legacy dict (Hits@1, MRR, threshold-based F1, etc.), the script always prints a second line **`Ranking metrics:`** with scores that do **not** use `--threshold`: **Hits@K** (for K from `--hits-k`), **MRR**, **MAP** (same as MRR with one relevant item per query), **mean_rank**, and **median_rank**. Ranks use the same tie rule as before (count candidates with similarity strictly above the diagonal).
-
-To save a PNG (bar chart of Hits@K plus histogram of ranks), pass **`--plot-out`** (ignored in `--mode candidate`). Example:
-
-```bash
-uv run python scripts/run_retrieval_eval.py \
-  --dataset-path data/datasets/total_dataset_v11.pkl \
-  --mode matrix \
-  --emb-key clasp_emb \
-  --text-key text \
-  --threshold 0.5 \
-  --plot-out artifacts/retrieval_eval.png \
-  --hits-k 1,5,10,50
-```
-
-With Docker and a bind mount on the repo root, the file appears on the host at the same relative path (e.g. `artifacts/retrieval_eval.png`).
-
-## Notes
-
-- Retrieval is performed on audio-derived vector representations (`hubert-emb` or `audio` keys when you set `--audio-key`, depending on your experiment).
-- Matrix mode does not train the model; it only evaluates similarities using **precomputed** query embeddings under `--emb-key`.
-- The modular code matches the notebook behavior; notebooks remain the baseline reference for exact preprocessing.
-
-## Abstract
-
-This study introduces CLASP (Contrastive Language-Speech Pretraining), a multilingual, multimodal representation tailored for audio-text information retrieval. CLASP leverages the synergy between spoken content and textual data. During training, we utilize our newly introduced speech-text dataset, which encompasses 15 diverse categories ranging from fiction to religion. CLASP's audio component integrates audio spectrograms with a pre-trained self-supervised speech model, while its language encoding counterpart employs a sentence encoder pre-trained on over 100 languages. This unified lightweight model bridges the gap between various modalities and languages, enhancing its effectiveness in handling and retrieving multilingual and multimodal data. Our evaluations across multiple languages demonstrate that CLASP establishes new benchmarks in HITS@1, MRR, and meanR metrics, outperforming traditional ASR-based retrieval methods that rely on transcribing speech into text for subsequent text retrieval in specific scenarios.
+[Models](https://huggingface.co/llm-lab/CLASP) | [SpeechBrown Dataset](https://huggingface.co/datasets/llm-lab/SpeechBrown) | [Springer](https://link.springer.com/chapter/10.1007/978-3-031-88717-8_2)
 
 ![CLASP-panel5](https://github.com/user-attachments/assets/472c5a52-29dd-4c59-af65-22a43fadc47e)
 
-## Contributions
+## Quick links
 
-1. We introduce CLASP (Contrastive Language-Speech Pretraining), a novel lightweight multilingual, multimodal representation designed for audio-text retrieval.
-2. We introduce a diverse paired speech-text dataset (Speech Brown) in 15 categories, encompassing a wide range of topics from fiction to religion.
-3. We show that the combination of audio spectrograms with a pre-trained self-supervised speech model improves audio encoding in retrieval applications.
-4. Evaluations in multiple languages demonstrate that CLASP sets new benchmarks in HITS@1, Mean Reciprocal Rank (MRR), and Mean Rank (meanR) metrics.
+- **[Training guide](docs/TRAINING.md)** — how to train with VoxPopuli, Spoken SQuAD, and SPIRAL
+- **[Evaluation guide](docs/EVAL.md)** — retrieval eval and noise robustness on each dataset
+
+## Project structure
+
+```text
+.
+├── src/clasp/          # library code (models, data, inference, evaluation)
+├── scripts/            # train.py, build_*_pkl.py, run_*_eval.py
+├── notebooks/          # original notebooks (unchanged)
+├── models/checkpoints/ # *.pt weights
+├── data/datasets/      # total_dataset_*.pkl
+└── artifacts/          # embeddings, plots
+```
+
+See `src/clasp/` for the full module breakdown.
+
+## Environment
+
+```bash
+uv sync                       # base deps
+uv sync --extra realdata      # SpeechBrown / Spoken SQuAD
+uv sync --extra voxpopuli     # VoxPopuli
+```
+
+Or with pip: `pip install -e .`
+
+## Checkpoints
+
+Download official weights from [llm-lab/CLASP](https://huggingface.co/llm-lab/CLASP):
+
+```bash
+huggingface-cli download llm-lab/CLASP CLASP_Concat_Final_Fusion_Encoder.pt \
+  --local-dir models/checkpoints
+```
+
+For warm-start training use **`CLASP_Concat_Final_Fusion_Encoder.pt`** with `--init-checkpoint`.
+
+## Abstract
+
+CLASP is a multilingual, multimodal representation for audio-text information retrieval. It leverages the synergy between spoken content and textual data, combining audio spectrograms with HuBERT and a LaBSE sentence encoder. Evaluated across multiple languages, CLASP establishes new benchmarks in HITS@1, MRR, and meanR, outperforming ASR-based retrieval pipelines.
 
 ## Citation
-
-If you find our paper, code, data, or models useful, please cite:
 
 ```bibtex
 @inproceedings{10.1007/978-3-031-88717-8_2,
   author = {Abootorabi, Mohammad Mahdi and Asgari, Ehsaneddin},
   title = {CLASP: Contrastive Language-Speech Pretraining for Multilingual Multimodal Information Retrieval},
   year = {2025},
-  isbn = {978-3-031-88716-1},
   publisher = {Springer-Verlag},
-  address = {Berlin, Heidelberg},
-  url = {https://doi.org/10.1007/978-3-031-88717-8_2},
   doi = {10.1007/978-3-031-88717-8_2},
-  abstract = {This study introduces CLASP (Contrastive Language-Speech Pretraining), a multilingual, multimodal representation tailored for audio-text information retrieval. CLASP leverages the synergy between spoken content and textual data. During training, we utilize our newly introduced speech-text dataset, which encompasses 15 diverse categories ranging from fiction to religion. CLASP’s audio component integrates audio spectrograms with a pre-trained self-supervised speech model, while its language encoding counterpart employs a sentence encoder pre-trained on over 100 languages. This unified lightweight model bridges the gap between various modalities and languages, enhancing its effectiveness in handling and retrieving multilingual and multimodal data. Our evaluations across multiple languages demonstrate that CLASP establishes new benchmarks in HITS@1, MRR, and meanR metrics, outperforming traditional ASR-based retrieval methods that rely on transcribing speech into text for subsequent text retrieval, especially in specific scenarios.},
-  booktitle = {Advances in Information Retrieval: 47th European Conference on Information Retrieval, ECIR 2025, Lucca, Italy, April 6-10, 2025, Proceedings, Part IV},
+  booktitle = {Advances in Information Retrieval: ECIR 2025, Lucca, Italy},
   pages = {10-20},
-  numpages = {11},
-  keywords = {Multimodal IR, Speech Retrieval, Contrastive Learning},
-  location = {Lucca, Italy}
 }
 ```
 
 ## Contact
 
-If you have questions, please send an email to:
 - mahdi.abootorabi2@gmail.com
 - asgari@berkeley.edu
