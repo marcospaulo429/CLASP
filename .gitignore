@@ -14,7 +14,10 @@ results/
 venv/
 train_wav/
 spiral_dataset/
-logs
+logs*
+spoken_*.json
+wget-log
+.hf_datasets_cache/
 
 # Created by https://www.gitignore.io/api/python
 # Edit at https://www.gitignore.io/?templates=python
