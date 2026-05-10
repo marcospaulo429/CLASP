@@ -1,0 +1,21 @@
+# Build CLASP images (arm64 vs amd64). Dockerfiles: docker/Dockerfile.{arm64,amd64}
+# SPIRAL / LaBSE: voxpopuli (or override build-arg with realdata for a slimmer image).
+
+services:
+  clasp-arm64:
+    image: clasp:arm64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.arm64
+      args:
+        UV_EXTRA_GROUPS: voxpopuli
+    platform: linux/arm64
+
+  clasp-amd64:
+    image: clasp:amd64
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.amd64
+      args:
+        UV_EXTRA_GROUPS: voxpopuli
+    platform: linux/amd64

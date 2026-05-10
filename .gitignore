@@ -4,6 +4,20 @@ node_modules/
 *.egg-info/
 .ipynb_checkpoints
 *.tsbuildinfo
+dev_wav*
+data*
+artifacts
+Spoken_Squad_Dataset
+Spoken*
+data/
+results/
+venv/
+train_wav/
+spiral_dataset/
+logs*
+spoken_*.json
+wget-log
+.hf_datasets_cache/
 
 # Created by https://www.gitignore.io/api/python
 # Edit at https://www.gitignore.io/?templates=python
@@ -138,3 +152,17 @@ ui-tests/.pnp.*
 
 # generated html
 notebook/templates/*.html
+dev_wav
+Spoken-SQuAD*
+Spoken-SQuAD_audio.zip
+*.pt
+data/datasets/spoken_squad
+
+# Noise data
+data/noise_sources
+
+
+# Environment variables
+.env
+.env.local
+.env.*.local

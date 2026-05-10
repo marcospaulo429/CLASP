@@ -7,7 +7,7 @@ name = "clasp"
 version = "0.1.0"
 description = "Modularized CLASP training, inference, and retrieval evaluation."
 readme = "README.md"
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.10,<3.13"
 dependencies = [
   "torch",
   "numpy",
@@ -24,6 +24,15 @@ realdata = [
   "sentence-transformers",
   "torchvision",
   "Pillow",
+]
+voxpopuli = [
+  "datasets",
+  "sentence-transformers",
+  "torchvision",
+  "Pillow",
+]
+notebooks = [
+  "datasets",
 ]
 
 [tool.hatch.build.targets.wheel]

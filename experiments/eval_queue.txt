@@ -1,0 +1,22 @@
+# eval_queue.txt — Configuration file for parallel_eval.sh
+# One job per line. Format:
+#   voxpopuli <pkl> <model>
+#   spoken_squad <pkl> <model>
+#   spiral <model> [<pkl_for_noise>]
+#
+# Usage:
+#   bash experiments/parallel_eval.sh -j 2 --config experiments/eval_queue.txt
+
+# Example jobs (uncomment to enable):
+
+# VoxPopuli eval
+# voxpopuli data/datasets/total_dataset_voxpopuli_en.pkl models/checkpoints/clasp_vox.pt
+
+# Spoken SQuAD eval
+spoken_squad data/datasets/total_dataset_spoken_squad_20260506_174210.pkl models/checkpoints/clasp_spoken_squad_warmstart_20260508_134151.pt
+
+# SPIRAL eval (retrieval only, no noise)
+# spiral models/checkpoints/clasp_vox.pt
+
+# SPIRAL eval with noise robustness
+# spiral models/checkpoints/clasp_vox.pt spiral_dataset/data.jsonl
