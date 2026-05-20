@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,12 +36,37 @@ def parse_args():
                         help="Freeze audio_seq and image_seq, train only the fusion head (mix_seq).")
     parser.add_argument("--lr-step-size", type=int, default=10,
                         help="StepLR step size in epochs (default 10).")
+    # W&B
+    parser.add_argument("--wandb-project", default=None, help="W&B project name. Omit to disable logging.")
+    parser.add_argument("--wandb-entity", default=None, help="W&B entity (team or user).")
+    parser.add_argument("--wandb-run-name", default=None, help="W&B run display name.")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     device = get_default_device()
+
+    use_wandb = args.wandb_project is not None
+    if use_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=args.wandb_run_name,
+            config={
+                "dataset_path": str(args.dataset_path),
+                "num_epochs": args.num_epochs,
+                "learning_rate": args.learning_rate,
+                "batch_size_train": args.batch_size_train,
+                "batch_size_val": args.batch_size_val,
+                "temperature": args.temperature,
+                "in_features_text": args.in_features_text,
+                "in_features_image": args.in_features_image,
+                "mode": args.mode,
+                "freeze_encoders": args.freeze_encoders,
+                "lr_step_size": args.lr_step_size,
+            },
+        )
 
     with open(args.dataset_path, "rb") as f:
         total_dataset = pickle.load(f)
@@ -80,9 +106,12 @@ def main():
         learning_rate=args.learning_rate,
         temperature=args.temperature,
         lr_step_size=args.lr_step_size,
+        epoch_log_fn=wandb.log if use_wandb else None,
     )
     torch.save(best_model, args.save_path)
     print(f"Saved model to {args.save_path}")
+    if use_wandb:
+        wandb.finish()
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 from transformers import AutoProcessor, HubertModel
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +66,10 @@ def parse_args():
     parser.add_argument("--vision-batch-size", type=int, default=4)
     parser.add_argument("--text-batch-size", type=int, default=32)
     parser.add_argument("--max-test-samples", type=int, default=None, help="Limit test set size")
+    # W&B
+    parser.add_argument("--wandb-project", default=None, help="W&B project name. Omit to disable logging.")
+    parser.add_argument("--wandb-entity", default=None, help="W&B entity (team or user).")
+    parser.add_argument("--wandb-run-name", default=None, help="W&B run display name.")
     return parser.parse_args()
 
 
@@ -161,10 +166,31 @@ def build_noisy_embeddings(
     return hubert_embeddings, vision_embeddings
 
 
+def _init_wandb(args):
+    if args.wandb_project is None:
+        return False
+    wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        config={
+            "model_path": str(args.model_path),
+            "dataset_path": str(args.dataset_path),
+            "hubert_model": args.hubert_model,
+            "num_candidates": args.num_candidates,
+            "snr_levels": args.snr_levels,
+            "max_test_samples": args.max_test_samples,
+            "device": str(args.device),
+        },
+    )
+    return True
+
+
 def main():
     args = parse_args()
     device = torch.device(args.device) if args.device else get_default_device()
-    
+    use_wandb = _init_wandb(args)
+
     # Load pickle
     with open(args.dataset_path, "rb") as f:
         total_dataset = pickle.load(f)
@@ -217,24 +243,34 @@ def main():
     from torch.utils.data import DataLoader
     test_loader_clean = DataLoader(test_dataset_clean, batch_size=1, shuffle=False)
     results_clean = evaluate_model_on_candidates(model, test_loader_clean, device, threshold=0.5)
-    
+
+    if use_wandb:
+        wandb.log({"clean/" + k: v for k, v in results_clean.items()})
+
     # Parse SNR levels
     snr_levels = [float(x.strip()) for x in args.snr_levels.split(",")]
-    
+
     # Dictionary to store all results
     all_results = {"clean": results_clean}
-    
+
+    # W&B table accumulates one row per noise config
+    metric_keys: list[str] = list(results_clean.keys())
+    results_table: wandb.Table | None = None
+    if use_wandb:
+        results_table = wandb.Table(columns=["noise_config", "noise_type", "snr_db"] + metric_keys)
+        results_table.add_data("clean", "clean", None, *[results_clean[k] for k in metric_keys])
+
     # Evaluate under noise
     noise_types_to_test = ["white"]
     if args.wham_dir:
         noise_types_to_test.append("ambient")
     noise_types_to_test.append("reverb")
-    
+
     for noise_type in noise_types_to_test:
         for snr in snr_levels:
             noise_name = f"{noise_type}_{snr}"
             print(f"\nEvaluating: {noise_name}")
-            
+
             # Build noisy embeddings
             hubert_embs, vision_embs = build_noisy_embeddings(
                 audio_paths,
@@ -247,32 +283,59 @@ def main():
                 device,
                 wham_audio=wham_audio,
             )
-            
+
             # Create test dataset with noisy embeddings
             test_data_noisy = {
                 args.audio_key: hubert_embs,
                 "image": vision_embs,
                 args.text_key: test_data[args.text_key],
             }
-            
+
             test_dataset_noisy = TestDataset(test_data_noisy, test_metadata, args.audio_key, args.text_key)
             test_loader_noisy = DataLoader(test_dataset_noisy, batch_size=1, shuffle=False)
             results_noisy = evaluate_model_on_candidates(model, test_loader_noisy, device, threshold=0.5)
-            
+
             all_results[noise_name] = results_noisy
             print(f"  Hits@1: {results_noisy['Hits@1']:.4f}, MRR: {results_noisy['MRR']:.4f}")
-    
+
+            if use_wandb:
+                wandb.log({
+                    f"{noise_type}/Hits@1": results_noisy["Hits@1"],
+                    f"{noise_type}/MRR": results_noisy["MRR"],
+                    f"{noise_type}/Macro_F1": results_noisy["Macro F1"],
+                    f"{noise_type}/Accuracy": results_noisy["Accuracy"],
+                    f"{noise_type}/Golden_Accuracy": results_noisy["Golden Accuracy"],
+                    "snr_db": snr,
+                    "noise_type": noise_type,
+                })
+                results_table.add_data(
+                    noise_name, noise_type, snr, *[results_noisy[k] for k in metric_keys]
+                )
+
     # Print results table
     print("\n" + "=" * 80)
     print("NOISE ROBUSTNESS EVALUATION RESULTS")
     print("=" * 80)
-    
+
     for noise_config, metrics in all_results.items():
         print(f"\n{noise_config}:")
         print(f"  Hits@1:  {metrics['Hits@1']:.4f}")
         print(f"  MRR:     {metrics['MRR']:.4f}")
         print(f"  Accuracy: {metrics['Accuracy']:.4f}")
-    
+
+    if use_wandb:
+        # Summary metrics: best clean and worst noisy
+        noisy_hits = [m["Hits@1"] for k, m in all_results.items() if k != "clean"]
+        wandb.summary["clean_Hits@1"] = results_clean["Hits@1"]
+        wandb.summary["clean_MRR"] = results_clean["MRR"]
+        wandb.summary["min_noisy_Hits@1"] = min(noisy_hits)
+        wandb.summary["max_noisy_Hits@1"] = max(noisy_hits)
+        wandb.summary["relative_degradation"] = (
+            1 - (sum(noisy_hits) / len(noisy_hits)) / results_clean["Hits@1"]
+        )
+        wandb.log({"results_table": results_table})
+        wandb.finish()
+
     # Save to CSV if requested
     if args.output_csv:
         print(f"\nSaving results to {args.output_csv}...")

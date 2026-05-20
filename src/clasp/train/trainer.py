@@ -22,6 +22,7 @@ def train_the_model(
     delta=0.6,
     temperature=np.log(0.07),
     lr_step_size=10,
+    epoch_log_fn=None,
 ):
     del delta  # kept for signature parity with notebook
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -120,6 +121,9 @@ def train_the_model(
                 f"Train Loss: {train_loss:.6f}\t"
                 f"Validation Loss: {val_loss:.6f}"
             )
+
+            if epoch_log_fn is not None:
+                epoch_log_fn({"train_loss": train_loss, "val_loss": val_loss, "epoch": epoch + 1})
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
