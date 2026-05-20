@@ -118,7 +118,6 @@ def add_reverberation(audio: np.ndarray, decay_time_ms: float = 150.0, sr: int =
     Args:
         audio: Input audio as float32 array.
         decay_time_ms: Time for impulse response to decay (in milliseconds, default 150 ms).
-                       Smaller values = less reverb decay, larger = more decay.
         sr: Sample rate (default 16000 Hz).
 
     Returns:
@@ -126,29 +125,66 @@ def add_reverberation(audio: np.ndarray, decay_time_ms: float = 150.0, sr: int =
     """
     audio = np.asarray(audio, dtype=np.float32)
 
-    # Create synthetic room impulse response: exponential decay
-    decay_samples = int(decay_time_ms / 1000.0 * sr)
-    decay_samples = max(1, decay_samples)
-
-    # Exponential decay envelope: early reflection + decay tail
+    decay_samples = max(2, int(decay_time_ms / 1000.0 * sr))
     t = np.arange(decay_samples, dtype=np.float32) / sr
-    rir = np.exp(-3.0 * t / (decay_time_ms / 1000.0))  # decay coefficient
-
-    # Add some early reflections (simulating wall bounces)
-    rir[0] = 1.0  # Direct sound
-    early_idx = max(1, int(0.05 * sr))  # 50ms early reflection
+    rir = np.exp(-3.0 * t / (decay_time_ms / 1000.0))
+    rir[0] = 1.0
+    early_idx = max(1, int(0.05 * sr))
     if early_idx < len(rir):
         rir[early_idx] += 0.5
-
-    # Normalize
     rir = rir / np.max(np.abs(rir))
 
-    # Convolve audio with RIR
     reverb_audio = scipy.signal.fftconvolve(audio, rir, mode="same")
-
-    # Normalize to prevent clipping
     max_val = np.max(np.abs(reverb_audio))
     if max_val > 0:
         reverb_audio = reverb_audio / max_val * 0.95
+    return np.clip(reverb_audio, -1.0, 1.0).astype(np.float32)
 
+
+def add_reverberation_drr(
+    audio: np.ndarray, drr_db: float = 0.0, decay_time_ms: float = 150.0, sr: int = 16000
+) -> np.ndarray:
+    """Add reverberation at a specified Direct-to-Reverberant Ratio (DRR).
+
+    DRR = 10 * log10(P_direct / P_reverb).  Higher DRR = less reverb (cleaner).
+    The paper (Tseng & Harwath, Interspeech 2025) sweeps DRR from +10 down to -20 dB.
+
+    Args:
+        audio: Input audio as float32 array.
+        drr_db: Direct-to-Reverberant Ratio in dB (default 0 dB = equal direct/reverb energy).
+        decay_time_ms: Controls RIR tail length (default 150 ms).
+        sr: Sample rate (default 16000 Hz).
+
+    Returns:
+        Audio with reverberation matching the target DRR.
+    """
+    audio = np.asarray(audio, dtype=np.float32)
+
+    decay_samples = max(2, int(decay_time_ms / 1000.0 * sr))
+    t = np.arange(decay_samples, dtype=np.float32) / sr
+
+    # Build reverb tail separately from the direct component
+    reverb_tail = np.exp(-3.0 * t / (decay_time_ms / 1000.0)).astype(np.float32)
+    reverb_tail[0] = 0.0  # direct component handled separately
+
+    # 50 ms early reflection
+    early_idx = max(1, int(0.05 * decay_time_ms / 1000.0 * sr))
+    if early_idx < len(reverb_tail):
+        reverb_tail[early_idx] += 0.5
+
+    # Scale tail so that P_direct / P_reverb_tail = 10^(DRR/10)
+    # P_direct = 1.0 (unit impulse), so P_reverb_target = 1 / 10^(DRR/10)
+    p_reverb_current = float(np.sum(reverb_tail ** 2))
+    if p_reverb_current > 0:
+        p_reverb_target = 1.0 / (10.0 ** (drr_db / 10.0))
+        reverb_tail = reverb_tail * float(np.sqrt(p_reverb_target / p_reverb_current))
+
+    rir = np.zeros(decay_samples, dtype=np.float32)
+    rir[0] = 1.0  # direct sound
+    rir += reverb_tail
+
+    reverb_audio = scipy.signal.fftconvolve(audio, rir, mode="same")
+    max_val = np.max(np.abs(reverb_audio))
+    if max_val > 0:
+        reverb_audio = reverb_audio / max_val * 0.95
     return np.clip(reverb_audio, -1.0, 1.0).astype(np.float32)

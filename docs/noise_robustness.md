@@ -8,10 +8,11 @@
 4. [Dataset Building with Noise](#4-dataset-building-with-noise)
 5. [Generating Pre-Augmented WAV Files](#5-generating-pre-augmented-wav-files)
 6. [Robustness Evaluation Protocol](#6-robustness-evaluation-protocol)
-7. [Evaluation Metrics](#7-evaluation-metrics)
-8. [Experimental Results](#8-experimental-results)
-9. [Key Findings & Discussion](#9-key-findings--discussion)
-10. [Reproducing the Experiments](#10-reproducing-the-experiments)
+7. [Weights & Biases Integration](#7-weights--biases-integration)
+8. [Evaluation Metrics](#8-evaluation-metrics)
+9. [Experimental Results](#9-experimental-results)
+10. [Key Findings & Discussion](#10-key-findings--discussion)
+11. [Reproducing the Experiments](#11-reproducing-the-experiments)
 
 ---
 
@@ -26,7 +27,7 @@ The model is built on three frozen encoders plus a trainable fusion network:
 | Component | Model | Output dimension |
 |-----------|-------|-----------------|
 | Audio encoder | HuBERT Large (`facebook/hubert-large-ls960-ft`) | 1024 |
-| Vision encoder | EfficientNet-B7 (spectrogram as image) | 1000 |
+| Vision encoder | EfficientNet-B7 (log-spectrogram as image) | 1000 |
 | Text encoder | LaBSE (`sentence-transformers/LaBSE`) | 768 |
 
 The fusion network (`HubertLabseConcat`) takes the HuBERT embedding and the EfficientNet spectrogram embedding, projects each to 768 dimensions through independent MLP branches, concatenates them, then passes through a final MLP to produce a 768-dimensional joint audio representation:
@@ -65,7 +66,7 @@ Steps applied in order:
 2. **Mono**: if multi-channel, average all channels
 3. **Peak normalize**: divide by `max(|audio|)` so the waveform is in `[-1, 1]`
 4. **Resample**: use `librosa` to bring to 16 kHz (HuBERT's expected sample rate)
-5. **Pad**: if shorter than 1 second (16,000 samples), zero-pad to exactly 1 s — this prevents HuBERT's CNN stack from crashing on very short clips
+5. **Pad**: if shorter than 1 second (16,000 samples), zero-pad to exactly 1 s — prevents HuBERT's CNN stack from crashing on very short clips
 
 All processed audio is `float32`. This function is called both during dataset building and during the online noise evaluation loop.
 
@@ -75,7 +76,7 @@ All processed audio is `float32`. This function is called both during dataset bu
 
 **File:** [`src/clasp/audio/noise_augmentation.py`](../src/clasp/audio/noise_augmentation.py)
 
-Three noise types are implemented. All functions operate on `float32` numpy arrays at 16 kHz and return audio clipped to `[-1, 1]`.
+The evaluation methodology follows **Tseng & Harwath (Interspeech 2025)** — "Probing the Robustness Properties of Neural Speech Codecs" — which sweeps three noise types across standardised level axes. All functions operate on `float32` numpy arrays at 16 kHz and return audio clipped to `[-1, 1]`.
 
 ### 3.1 White Noise
 
@@ -83,36 +84,43 @@ Three noise types are implemented. All functions operate on `float32` numpy arra
 def add_white_noise(audio, snr_db=20.0) -> np.ndarray:
 ```
 
-Adds white Gaussian noise at a specified signal-to-noise ratio.
+Adds white Gaussian noise at a specified signal-to-noise ratio (SNR). This approximates sensor or transmission-induced broadband noise, matching the paper's white noise condition.
 
 **Algorithm:**
 1. Compute signal power: `P_signal = mean(audio²)`
-2. Derive target noise power from SNR definition:
-   `P_noise = P_signal / 10^(SNR_dB / 10)`
-3. Sample i.i.d. Gaussian noise, scale its RMS to `sqrt(P_noise)`
+2. Derive noise power: `P_noise = P_signal / 10^(SNR_dB / 10)`
+3. Sample i.i.d. Gaussian noise and scale its RMS to `sqrt(P_noise)`
 4. Add to signal and clip to `[-1, 1]`
 
-Lower `snr_db` → more noise. At 5 dB the noise is quite perceptible; at 20 dB it is subtle.
+**Axis:** SNR in dB. Paper sweeps −10 to +30 dB; our default is −10 to +30.
 
 ### 3.2 Reverberation
 
+Two functions are available:
+
 ```python
 def add_reverberation(audio, decay_time_ms=150.0, sr=16000) -> np.ndarray:
+def add_reverberation_drr(audio, drr_db=0.0, decay_time_ms=150.0, sr=16000) -> np.ndarray:
 ```
 
-Applies synthetic room reverberation by convolving the audio with a synthetic room impulse response (RIR).
+`add_reverberation_drr` is the evaluation-facing function. It applies a synthetic room impulse response (RIR) parameterised by the **Direct-to-Reverberant Ratio (DRR)** — the same axis used by Tseng & Harwath.
+
+**DRR definition:**
+```
+DRR = 10 × log10(P_direct / P_reverb)
+```
+Higher DRR → cleaner (more direct sound relative to reverb). The paper sweeps DRR from +10 down to −20 dB.
 
 **Algorithm:**
-1. Build an exponential decay envelope of length `decay_time_ms` ms:
-   `rir[t] = exp(-3t / decay_time)` — models energy decay in a room
-2. Force `rir[0] = 1.0` (direct sound) and add a 0.5-amplitude early reflection at 50 ms
-3. Normalize the RIR to peak 1
-4. Convolve with `scipy.fftconvolve` (mode `"same"` preserves length)
-5. Normalize output to 95% of peak to avoid clipping
+1. Build an exponential decay reverb tail (no direct component): `tail[t] = exp(-3t / decay_time)`
+2. Add a 0.5-amplitude early reflection at 50 ms to simulate wall bounces
+3. Scale the tail so that `P_direct / P_tail = 10^(DRR/10)`, where `P_direct = 1` (unit impulse)
+4. Combine: `RIR = direct_impulse + scaled_tail`
+5. Convolve with `scipy.fftconvolve` (mode `"same"` preserves length) and normalise to 95% peak
 
-> **Note:** In `run_noise_robustness_eval.py`, the `snr_db` parameter is repurposed as `decay_time_ms × 10` for reverb (e.g., SNR=20 → 200 ms decay, SNR=5 → 50 ms decay). This is a parameter-mapping quirk in the evaluation script.
+`add_reverberation` (the legacy function) controls reverberation via decay time in milliseconds and is used during training-time augmentation and `augment_wavs.py`.
 
-### 3.3 Ambient Noise (ESC-50)
+### 3.3 Ambient Noise
 
 ```python
 def add_ambient_noise(audio, noise_audio, snr_db=20.0) -> np.ndarray:
@@ -120,15 +128,18 @@ def load_esc50_clip(esc50_files, target_sr=16000) -> np.ndarray:
 def scan_esc50_files(esc50_dir) -> list[Path]:
 ```
 
-Mixes a real-world environmental sound from the ESC-50 dataset into the speech signal at a specified SNR.
+Mixes a real-world environmental sound into the speech signal at a specified SNR. Supported sources:
+
+- **ESC-50**: 2,000 clips across 50 categories (rain, crowd, dog bark, etc.). Files are automatically located in `{dir}/audio/*.wav` or `{dir}/*.wav`.
+- **WHAM!**: Real-world background sounds used in the paper. Any directory of WAVs is accepted via `--ambient-dir` with `--ambient-source wham`.
 
 **Algorithm:**
-1. Load a random ESC-50 clip (originally 44,100 Hz), resample to 16 kHz
-2. Tile or crop the noise to match the speech length
-3. Scale noise to the target SNR using the same power-based formula as white noise
+1. Load a random clip and resample to 16 kHz
+2. Tile or crop to match the speech length (random crop start)
+3. Scale to target SNR using the same power formula as white noise
 4. Mix and clip
 
-ESC-50 contains 2,000 clips across 50 environmental categories (rain, crowd, dog bark, etc.), making it a more realistic noise source than synthetic white noise.
+**Axis:** SNR in dB. Paper sweeps −10 to +30 dB; our default matches.
 
 ---
 
@@ -162,7 +173,7 @@ This stochastic approach means the training set sees both clean and noisy versio
 | `--noise-types` | `white reverb` | Space-separated list of noise types to sample from |
 | `--esc50-dir` | `None` | Required when `ambient` is in `--noise-types` |
 
-Noise is **only applied to the training split**. Validation and test splits always use clean embeddings for a consistent evaluation baseline.
+Noise is **only applied to the training split**. Validation and test splits always use clean embeddings.
 
 ### Full example
 
@@ -183,11 +194,11 @@ python scripts/build_spoken_squad_pkl.py \
 
 **File:** [`scripts/augment_wavs.py`](../scripts/augment_wavs.py)
 
-Instead of applying noise stochastically at embedding time, this script materializes all noisy variants as permanent `.wav` files. This creates a **reproducible, shareable dataset** that any downstream tool can consume — no code changes required.
+Instead of applying noise stochastically at embedding time, this script materializes all noisy variants as permanent `.wav` files, creating a **reproducible, shareable dataset** that any downstream tool can consume.
 
 ### Output naming
 
-For each input file `{a}_{p}_{q}.wav`, the script writes:
+For each input file `{a}_{p}_{q}.wav` the script writes:
 
 ```
 {a}_{p}_{q}_white.wav
@@ -232,6 +243,11 @@ python scripts/build_spoken_squad_pkl.py \
     --output data/datasets/total_dataset_noisy.pkl
 ```
 
+**Zip for sharing:**
+```bash
+tar -czf train_wav_noisy.tar.gz data/datasets/spoken_squad/train_wav_noisy/
+```
+
 ### Storage estimate
 
 | Config | Files per original | Multiplier |
@@ -246,36 +262,38 @@ python scripts/build_spoken_squad_pkl.py \
 
 **File:** [`scripts/run_noise_robustness_eval.py`](../scripts/run_noise_robustness_eval.py)
 
-This script measures how retrieval performance degrades as noise severity increases. It does **not** use pre-augmented WAVs — it applies noise online at evaluation time so that exact SNR levels can be swept programmatically.
+This script measures how retrieval performance degrades as noise severity increases, following the methodology of Tseng & Harwath (Interspeech 2025). It applies noise online at evaluation time so that exact level grids can be swept without storing pre-augmented audio.
+
+### Key design decisions aligned with the paper
+
+| Aspect | Paper | This implementation |
+|--------|-------|---------------------|
+| White noise axis | SNR (dB) | `--snr-levels` (default: `30,20,10,5,0,-5,-10`) |
+| Ambient noise axis | SNR (dB) | `--snr-levels` (same parameter) |
+| Reverb axis | DRR (dB) | `--drr-levels` (default: `10,5,0,-5,-10,-15,-20`) |
+| Reverb implementation | DNS Challenge real RIRs | Synthetic exponential-decay RIR scaled to target DRR |
+| Ambient source | WHAM! | ESC-50 or WHAM! (selectable via `--ambient-source`) |
+| Vision branch under noise | N/A (codec study) | Both HuBERT **and** EfficientNet receive the same noisy waveform |
+
+> **Reverb vs SNR**: earlier versions of this codebase incorrectly reused the `--snr-levels` parameter for reverberation, mapping SNR → `decay_time_ms × 10`. This has been corrected: reverberation now uses a separate `--drr-levels` parameter and the `add_reverberation_drr` function, which properly scales the RIR tail to hit the target DRR.
 
 ### Protocol
 
-1. **Load a trained CLASP checkpoint** and the pre-built test dataset (`.pkl`)
-2. **Establish a clean baseline** using the embeddings already stored in the pickle
-3. **For each noise type × SNR level combination:**
+1. **Load** a trained CLASP checkpoint and the pre-built test dataset (`.pkl`)
+2. **Establish a clean baseline** using the embeddings already stored in the pickle (no re-embedding needed)
+3. **White and ambient noise** — for each SNR level:
    - Load each test audio file from disk
-   - Apply the noise augmentation at the specified SNR
-   - Re-embed with HuBERT (and EfficientNet for vision)
-   - Replace the stored audio/image embeddings with the noisy ones
+   - Apply noise at the specified SNR
+   - Re-embed with **both** HuBERT and EfficientNet (spectrogram of the noisy audio)
    - Run the full retrieval evaluation
-4. **Save all results** to a CSV
-
-### SNR sweep
-
-Default SNR levels: `20, 15, 10, 5` dB (comma-separated via `--snr-levels`).
-Lower SNR = more noise = harder condition.
-
-### Noise types evaluated
-
-- `white` — synthetic Gaussian noise at each SNR level
-- `reverb` — synthetic room reverberation (SNR parameter controls decay time)
-- `ambient` — ESC-50 environmental sounds (requires `--wham-dir`)
+4. **Reverberation** — same steps, but sweep DRR levels instead of SNR
+5. **Log and save** results to CSV and optionally to W&B
 
 ### Retrieval setup
 
-Each test sample is evaluated against `--num-candidates` candidates (default: 10). The candidate pool for each query consists of `num_candidates - 1` randomly sampled distractors plus the ground-truth audio. The ground truth is always placed last in the candidate list.
+Each test sample is evaluated against `--num-candidates` candidates (default: 10). The candidate pool consists of `num_candidates - 1` randomly sampled distractors plus the ground-truth audio (placed last). The ground truth's rank is measured and averaged across all queries.
 
-### Example
+### Full example
 
 ```bash
 python scripts/run_noise_robustness_eval.py \
@@ -283,14 +301,57 @@ python scripts/run_noise_robustness_eval.py \
     --model-path models/clasp_best.pt \
     --train-json data/datasets/spoken_squad/spoken_train-v1.1.json \
     --wav-dir data/datasets/spoken_squad/train_wav \
-    --snr-levels "20,15,10,5" \
+    --snr-levels "30,20,10,5,0,-5,-10" \
+    --drr-levels "10,5,0,-5,-10,-15,-20" \
+    --ambient-dir data/datasets/ESC-50 \
+    --ambient-source esc50 \
     --num-candidates 10 \
-    --output-csv results/noise_robustness_run1.csv
+    --output-csv results/robustness.csv \
+    --wandb-project clasp-paper \
+    --wandb-run-name "4090-robustness-run1"
 ```
 
 ---
 
-## 7. Evaluation Metrics
+## 7. Weights & Biases Integration
+
+Both the training script and the robustness evaluation script support optional W&B logging via three shared flags:
+
+| Flag | Description |
+|------|-------------|
+| `--wandb-project` | W&B project name. Omit to disable all W&B logging. |
+| `--wandb-entity` | W&B entity (username or team). |
+| `--wandb-run-name` | Display name for the run in the W&B dashboard. |
+
+### What gets logged during robustness evaluation
+
+**Per condition** (one `wandb.log` call per noise type × level):
+- `white/Hits@1`, `white/MRR`, `white/Macro_F1`, `white/Accuracy`, `white/Golden_Accuracy`
+- Same keys under `ambient/` and `reverb/`
+- `snr_db` (for white/ambient conditions) or `drr_db` (for reverb) — used as the x-axis in W&B line charts
+
+**Clean baseline** (logged once, prefixed with `clean/`):
+- `clean/Hits@1`, `clean/MRR`, etc.
+
+**Full results table** (`wandb.Table`):
+- Columns: `noise_config`, `noise_type`, `level_axis`, `level`, plus all metric columns
+- One row per condition; can be used to build custom charts in the W&B UI
+
+**Run summary** (visible in the runs list without opening the run):
+- `clean_Hits@1`, `clean_MRR`
+- `min_noisy_Hits@1`, `max_noisy_Hits@1`
+- `avg_relative_degradation` — `1 - mean(noisy_Hits@1) / clean_Hits@1`
+
+### What gets logged during training
+
+Per epoch:
+- `train_loss`, `val_loss`, `epoch`
+
+Run config: all CLI arguments (learning rate, batch size, temperature, mode, etc.).
+
+---
+
+## 8. Evaluation Metrics
 
 **File:** [`src/clasp/evaluation/metrics.py`](../src/clasp/evaluation/metrics.py)
 
@@ -308,15 +369,15 @@ This is the primary metric for retrieval quality. A random baseline with `k` can
 ```
 MRR = (1/N) × Σ 1/rank(ground_truth_i)
 ```
-MRR rewards partial credit — ranking the correct answer second scores 0.5. A random baseline with `k` candidates scores approximately `(ln k + 1) / (2k)`.
+MRR rewards partial credit — ranking the correct answer second scores 0.5.
 
 ### Classification metrics (threshold-based)
 
-At a cosine similarity threshold of 0.5, each (query, candidate) pair is classified as match / non-match. Standard sklearn metrics are then computed:
+At a cosine similarity threshold of 0.5, each (query, candidate) pair is classified as match / non-match:
 
-- **Macro Precision / Recall / F1** — class-balanced averages (treats positive and negative class equally)
+- **Macro Precision / Recall / F1** — class-balanced averages
 - **Micro Precision / Recall / F1** — instance-weighted averages
-- **Accuracy** — fraction of (query, candidate) pairs correctly classified
+- **Accuracy** — fraction of pairs correctly classified
 - **Golden Accuracy** — fraction of queries where the ground-truth cosine similarity ≥ 0.5
 
 ### Random baselines (10 candidates)
@@ -328,111 +389,95 @@ At a cosine similarity threshold of 0.5, each (query, candidate) pair is classif
 
 ---
 
-## 8. Experimental Results
+## 9. Experimental Results
 
-Three sets of results are stored in the repository root.
+Three CSV files in the repository root capture results from earlier evaluation runs. Note that these were generated with the **old evaluation script** (reverb parameterised by SNR, not DRR; vision branch using clean audio). They are preserved for reference.
 
-### 8.1 Small-scale robustness test (`results_noise_robustness.csv`)
+### 9.1 Small-scale test (`results_noise_robustness.csv`)
 
-Quick evaluation on ~12 test samples. Results are noisy due to small sample size but give directional signal.
+~12 test samples; results are directional only.
 
 | Condition | Hits@1 | MRR |
 |-----------|--------|-----|
 | Clean | 0.333 | 0.444 |
 | White SNR=20 | 0.333 | 0.437 |
-| White SNR=15 | 0.333 | 0.438 |
-| White SNR=10 | 0.333 | 0.441 |
 | White SNR=5 | **0.250** | 0.414 |
-| Reverb SNR=20 | **0.250** | 0.386 |
-| Reverb SNR=15 | **0.250** | 0.397 |
-| Reverb SNR=10 | **0.250** | 0.393 |
-| Reverb SNR=5 | 0.333 | 0.454 |
+| Reverb (old, SNR=20) | **0.250** | 0.386 |
+| Reverb (old, SNR=5) | 0.333 | 0.454 |
 
-At this scale, the model is more sensitive to reverberation than white noise. White noise only causes a drop at 5 dB. Reverb causes consistent Hits@1 degradation across all decay lengths.
+### 9.2 Noise-augmented model (`results_noise_model.csv`)
 
-### 8.2 Large-scale noise model (`results_noise_model.csv`)
+~3,483 test samples. Best-performing checkpoint.
 
-Full test set evaluation (~3,483 samples). This appears to be the best-performing model checkpoint.
-
-| Condition | Hits@1 | MRR | Δ Hits@1 vs clean |
-|-----------|--------|-----|-------------------|
+| Condition | Hits@1 | MRR | Δ Hits@1 |
+|-----------|--------|-----|----------|
 | Clean | **0.552** | **0.709** | — |
 | White SNR=20 | 0.101 | 0.297 | −81.7% |
-| White SNR=15 | 0.099 | 0.296 | −82.1% |
-| White SNR=10 | 0.098 | 0.294 | −82.2% |
 | White SNR=5 | 0.097 | 0.295 | −82.4% |
-| Reverb SNR=20 | 0.104 | 0.300 | −81.2% |
-| Reverb SNR=15 | 0.102 | 0.298 | −81.5% |
-| Reverb SNR=10 | 0.105 | 0.299 | −81.0% |
-| Reverb SNR=5 | 0.103 | 0.299 | −81.3% |
+| Reverb (old, SNR=20) | 0.104 | 0.300 | −81.2% |
+| Reverb (old, SNR=5) | 0.103 | 0.299 | −81.3% |
 
-The model achieves strong clean performance (Hits@1=0.552 vs. 0.10 random baseline with 10 candidates), but degrades catastrophically under any noise — falling to roughly random performance.
+### 9.3 CLASP v2 (`results_CLASP2.csv`)
 
-### 8.3 CLASP v2 (`results_CLASP2.csv`)
+Larger test set; model not trained with noise augmentation.
 
-Second model variant, evaluated on a larger test set.
-
-| Condition | Hits@1 | MRR | Δ Hits@1 vs clean |
-|-----------|--------|-----|-------------------|
+| Condition | Hits@1 | MRR | Δ Hits@1 |
+|-----------|--------|-----|----------|
 | Clean | 0.418 | 0.538 | — |
 | White SNR=20 | 0.012 | 0.054 | −97.1% |
-| White SNR=15 | 0.012 | 0.054 | −97.1% |
-| White SNR=10 | 0.011 | 0.054 | −97.4% |
-| White SNR=5 | 0.011 | 0.054 | −97.5% |
-| Reverb SNR=20 | 0.010 | 0.054 | −97.6% |
-| Reverb SNR=15 | 0.011 | 0.054 | −97.4% |
-| Reverb SNR=10 | 0.012 | 0.054 | −97.2% |
-| Reverb SNR=5 | 0.011 | 0.053 | −97.3% |
-
-CLASP v2 degrades more severely than the noise model — from 0.418 to approximately 0.011 (essentially random on ~10 candidates). This suggests CLASP v2 was not trained with noise augmentation.
+| Reverb (old, SNR=20) | 0.010 | 0.054 | −97.6% |
 
 ### Summary comparison
 
-| Model | Clean Hits@1 | Noisy Hits@1 (avg) | Relative degradation |
-|-------|-------------|---------------------|----------------------|
+| Model | Clean Hits@1 | Noisy Hits@1 (avg) | Degradation |
+|-------|-------------|---------------------|-------------|
 | Noise model | 0.552 | ~0.101 | ~81% |
 | CLASP v2 | 0.418 | ~0.011 | ~97% |
 | Random (10 cand.) | 0.100 | 0.100 | 0% |
 
 ---
 
-## 9. Key Findings & Discussion
+## 10. Key Findings & Discussion
 
-### Finding 1: Large domain gap between clean training and noisy inference
+### Finding 1: Any noise causes catastrophic degradation
 
-Both models were trained on clean audio embeddings. When noise is introduced at inference time, HuBERT's internal representations shift substantially, causing the audio embeddings to land far from their expected positions in the joint space. This explains the catastrophic degradation.
+Both models collapse to near-random performance (Hits@1 ≈ 0.10) under any noise, even at mild SNR (20 dB). This indicates a large domain gap between the clean-speech distribution that HuBERT was fine-tuned on and the noisy-speech distribution. The embedding space shifts enough that the fusion network can no longer find the correct match.
 
-### Finding 2: SNR level has minimal impact within the tested range
+### Finding 2: Noise level has minimal marginal impact
 
-For both white noise and reverb, the Hits@1 drop is nearly identical across SNR = 20, 15, 10, 5 dB. This suggests the degradation is primarily caused by the **qualitative change in the embedding distribution** (any noise shifts it) rather than the quantitative severity. Even "mild" noise (20 dB SNR) causes near-complete failure.
+Within the tested SNR range (5–20 dB), Hits@1 barely changes. The step-change happens between clean and any noise, not between mild and severe noise. This suggests the model's failure mode is qualitative (wrong embedding region), not quantitative (wrong distance).
 
 ### Finding 3: White noise and reverb cause equivalent damage
 
-Reverb and white noise produce statistically similar drops, even though they operate through completely different mechanisms. This is consistent with HuBERT being sensitive to any deviation from clean speech, rather than specific noise characteristics.
+Despite operating through completely different mechanisms, both noise types produce statistically similar Hits@1 drops. This is consistent with HuBERT's sensitivity to any deviation from clean speech rather than specific noise characteristics.
 
-### Finding 4: Noise-augmented training significantly helps but does not solve the problem
+### Finding 4: Noise-augmented training helps but doesn't close the gap
 
-The noise model (Hits@1=0.552 clean, ~0.10 noisy) is considerably more robust than CLASP v2 (0.418 → 0.011). However, both collapse well below clean performance. True robustness would require:
-- Training with the same SNR levels used at evaluation
-- Potentially noise-augmenting the text embeddings or the fusion network rather than just the audio encoder input
-- Spectrogram augmentation (SpecAugment) at training time
+The noise model (Hits@1=0.552 clean → ~0.10 noisy, −81%) is significantly more robust than CLASP v2 (0.418 → 0.011, −97%). However, both collapse well below clean performance. True robustness would likely require:
+- Training at the same SNR/DRR levels used at evaluation
+- Augmenting the spectrogram branch independently (SpecAugment)
+- Noise-conditioning the fusion head, not just the audio encoder input
 
-### Finding 5: Vision branch is not re-embedded under noise
+### Finding 5 (corrected): Both encoder branches now use noisy audio
 
-In `run_noise_robustness_eval.py`, the vision branch (EfficientNet spectrogram) is re-computed from the original clean WAV path, not the noisy audio. This means the multi-modal fusion receives one noisy modality (HuBERT) and one clean modality (EfficientNet), which may partially attenuate noise sensitivity — but also means the vision branch cannot be studied independently under noise.
+Earlier results had a methodological inconsistency: the EfficientNet spectrogram branch used the original clean audio path even during noisy evaluation, meaning the fusion network received one noisy modality and one clean modality. This has been fixed — `efficientnet_embeddings_from_audio_arrays` now accepts in-memory numpy arrays so both HuBERT and EfficientNet receive the same noisy waveform. **Results from future runs will not be directly comparable to the three archived CSVs above.**
+
+### Relation to Tseng & Harwath (Interspeech 2025)
+
+The paper evaluates neural speech **codecs** (encoder → RVQ → decoder) using PESQ, ASR-WER, ASV-EER, and SER-ACC. CLASP is a cross-modal **retrieval** system using Hits@1 and MRR. The evaluation conditions (noise types, level axes, level grids) are now aligned with the paper's protocol. The key qualitative finding mirrors the paper: training data diversity and model design choices matter far more than operating at a higher bitrate (or, in CLASP's case, a higher capacity fusion head) for achieving noise robustness.
 
 ---
 
-## 10. Reproducing the Experiments
+## 11. Reproducing the Experiments
 
 ### Prerequisites
 
 ```bash
-# Install dependencies
+# Install all dependencies (includes wandb)
 uv sync  # or: pip install -e .
 
 # Download ESC-50 if using ambient noise
-# Place it at: data/datasets/ESC-50/audio/*.wav
+# Place WAVs at: data/datasets/ESC-50/audio/*.wav
 ```
 
 ### Step 1 — Build clean dataset
@@ -447,14 +492,14 @@ python scripts/build_spoken_squad_pkl.py \
 ### Step 2 — Build noise-augmented dataset (optional)
 
 ```bash
-# Option A: stochastic online noise during embedding
+# Option A: stochastic online noise during embedding (fast, variable)
 python scripts/build_spoken_squad_pkl.py \
     --wav-dir data/datasets/spoken_squad/train_wav \
     --output data/datasets/total_dataset_noisy.pkl \
     --noise-prob 0.5 \
     --noise-types white reverb
 
-# Option B: pre-bake noisy WAVs for a shareable static dataset
+# Option B: pre-bake noisy WAVs (reproducible, shareable)
 python scripts/augment_wavs.py \
     --wav-dir data/datasets/spoken_squad/train_wav \
     --out-dir data/datasets/spoken_squad/train_wav_noisy \
@@ -476,7 +521,9 @@ python scripts/train.py \
     --dataset-path data/datasets/total_dataset_noisy.pkl \
     --save-path models/clasp_noise_robust.pt \
     --num-epochs 100 \
-    --learning-rate 1e-4
+    --learning-rate 1e-4 \
+    --wandb-project clasp-paper \
+    --wandb-run-name "noise-robust-v1"
 ```
 
 ### Step 4 — Evaluate noise robustness
@@ -487,17 +534,22 @@ python scripts/run_noise_robustness_eval.py \
     --model-path models/clasp_noise_robust.pt \
     --train-json data/datasets/spoken_squad/spoken_train-v1.1.json \
     --wav-dir data/datasets/spoken_squad/train_wav \
-    --snr-levels "20,15,10,5" \
+    --snr-levels "30,20,10,5,0,-5,-10" \
+    --drr-levels "10,5,0,-5,-10,-15,-20" \
+    --ambient-dir data/datasets/ESC-50 \
+    --ambient-source esc50 \
     --num-candidates 10 \
-    --output-csv results/noise_robustness_noise_robust_model.csv
+    --output-csv results/robustness.csv \
+    --wandb-project clasp-paper \
+    --wandb-run-name "4090-robustness-run1"
 ```
 
-### Step 5 — Zip the augmented dataset for sharing
+### Step 5 — Share the augmented dataset
 
 ```bash
-# Preferred: tar.gz (faster, ~10-20% smaller than zip on audio files)
+# tar.gz is faster and ~10-20% smaller than zip on audio files
 tar -czf train_wav_noisy.tar.gz data/datasets/spoken_squad/train_wav_noisy/
 
-# Alternative: zip
-zip -r train_wav_noisy.zip data/datasets/spoken_squad/train_wav_noisy/
+# Unpack on another machine
+tar -xzf train_wav_noisy.tar.gz
 ```
