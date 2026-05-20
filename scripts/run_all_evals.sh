@@ -36,9 +36,14 @@ SNR_LEVELS="30,20,10,5,0,-5,-10"
 DRR_LEVELS="10,5,0,-5,-10,-15,-20"
 NUM_CANDIDATES=100
 
-# W&B — leave WANDB_PROJECT empty ("") to disable
+# W&B — leave WANDB_PROJECT empty ("") to disable.
+# Leave WANDB_ENTITY empty ("") to let W&B use your login credentials automatically.
+# Only set it if you need to log to a specific team/org (use the org slug, NOT your username).
+# Your org slug is shown in parentheses when you run `wandb login`, e.g.:
+#   "Logged in as: gabriel (gabrielorlow-federal-university-of-goi-s)"
+#                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is the slug
 WANDB_PROJECT="clasp-paper"
-WANDB_ENTITY=""   # your W&B username or team, or leave empty
+WANDB_ENTITY=""
 
 # =============================================================================
 # Setup

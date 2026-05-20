@@ -261,10 +261,13 @@ def main() -> None:
 
     use_wandb = args.wandb_project is not None
     if use_wandb:
-        wandb.init(
+        init_kwargs: dict = dict(
             project=args.wandb_project,
-            entity=args.wandb_entity,
             name=args.wandb_run_name,
+        )
+        if args.wandb_entity:          # only pass entity when explicitly set
+            init_kwargs["entity"] = args.wandb_entity
+        wandb.init(**init_kwargs,
             config={
                 "model_path": str(args.model_path),
                 "dataset_path": str(args.dataset_path),

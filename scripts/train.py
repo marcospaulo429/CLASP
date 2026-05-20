@@ -49,10 +49,13 @@ def main():
 
     use_wandb = args.wandb_project is not None
     if use_wandb:
-        wandb.init(
+        init_kwargs: dict = dict(
             project=args.wandb_project,
-            entity=args.wandb_entity,
             name=args.wandb_run_name,
+        )
+        if args.wandb_entity:
+            init_kwargs["entity"] = args.wandb_entity
+        wandb.init(**init_kwargs,
             config={
                 "dataset_path": str(args.dataset_path),
                 "num_epochs": args.num_epochs,
