@@ -16,10 +16,10 @@ set -euo pipefail
 
 CLASP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # repo root (auto-detected)
 
-DATASET_PKL="data/datasets/total_dataset_spoken_squad.pkl"
-TRAIN_JSON="data/datasets/spoken_squad/spoken_train-v1.1.json"
-WAV_DIR="data/datasets/spoken_squad/train_wav"
-ESC50_DIR="data/datasets/ESC-50"                 # set to "" to skip ambient
+DATASET_PKL="/timevoz/CLASP/data/datasets/total_dataset_spoken_squad.pkl"
+TRAIN_JSON="/timevoz/CLASP/data/datasets/spoken_squad/spoken_train-v1.1.json"
+WAV_DIR="/timevoz/CLASP/data/datasets/spoken_squad/train_wav"
+ESC50_DIR="/timevoz/CLASP/data/noise_sources/esc50"                  # set to "" to skip ambient
 
 # Model checkpoints to evaluate — add/remove as needed
 declare -A MODELS=(

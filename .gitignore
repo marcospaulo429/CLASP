@@ -140,10 +140,13 @@ ui-tests/.pnp.*
 notebook/templates/*.html
 
 data/datasets/spoken_squad
+data/datasets/*.pkl
 
 # Noise data
 data/noise_sources
 
+# Pytorch models
+models/checkpoints/*.pt
 
 # Environment variables
 .env
