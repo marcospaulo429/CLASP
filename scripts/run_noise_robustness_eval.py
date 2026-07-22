@@ -30,7 +30,12 @@ from transformers import AutoProcessor, HubertModel
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from clasp.audio.noise_augmentation import add_ambient_noise, add_reverberation, add_white_noise
+from clasp.audio.noise_augmentation import (
+    add_ambient_noise,
+    add_reverberation,
+    add_white_noise,
+    scan_esc50_files,
+)
 from clasp.config.settings import get_default_device
 from clasp.data.datasets import TestDataset, build_test_metadata
 from clasp.evaluation.metrics import (
@@ -58,15 +63,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--noise-types",
         default="white,reverb",
-        help="Subset of {white, ambient, reverb}; ambient requires --wham-dir.",
+        help="Subset of {white, ambient, reverb}; ambient requires --wham-dir or --esc50-dir.",
     )
     p.add_argument("--wham-dir", type=Path, default=None,
-                   help="Diretório com WHAM/noise/*.wav (opcional)")
+                   help="WHAM dir with noise/*.wav (used for ambient noise; alt: --esc50-dir).")
+    p.add_argument("--esc50-dir", type=Path, default=None,
+                   help="ESC-50 dir with audio/*.wav (used for ambient noise; alt: --wham-dir).")
+    p.add_argument("--ambient-num-samples", type=int, default=64,
+                   help="How many ambient WAVs to pre-load and sample from (per-row).")
+    p.add_argument("--ambient-seed", type=int, default=42,
+                   help="Seed for per-row ambient noise selection (reproducibility).")
     p.add_argument("--output-csv", type=Path, default=None)
     p.add_argument("--device", default=None)
     p.add_argument("--hubert-model", default="facebook/hubert-large-ls960-ft")
     p.add_argument("--chunk-samples", type=int, default=320_000)
-    p.add_argument("--chunk-batch-size", type=int, default=1)
+    p.add_argument("--chunk-batch-size", type=int, default=4)
     p.add_argument("--retrieval-batch-size", type=int, default=64,
                    help="Batch da fusão CLASP no eval paragraph_grouped")
     p.add_argument("--hits-k", default="1,5,10,50")
@@ -92,33 +103,53 @@ def _load_concat(paths: list[str]) -> np.ndarray:
     return np.concatenate([np.asarray(x, dtype=np.float32).reshape(-1) for x in pieces])
 
 
-def _load_wham_sample(wham_dir: Path) -> np.ndarray:
-    files = sorted((wham_dir / "noise").glob("*.wav"))
-    if not files:
-        raise FileNotFoundError(f"No WHAM noise files in {wham_dir}/noise")
-    return load_mono_16k_padded(str(files[0]))
+def _load_ambient_pool(
+    wham_dir: Path | None,
+    esc50_dir: Path | None,
+    n_samples: int,
+    seed: int,
+) -> list[np.ndarray]:
+    """Pre-load a pool of ambient noise WAVs from WHAM and/or ESC-50."""
+    candidates: list[Path] = []
+    if wham_dir is not None:
+        candidates.extend(sorted((wham_dir / "noise").glob("*.wav")))
+    if esc50_dir is not None:
+        candidates.extend(scan_esc50_files(esc50_dir))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No ambient noise WAVs found (wham_dir={wham_dir}, esc50_dir={esc50_dir})"
+        )
+    rng = np.random.default_rng(seed)
+    if len(candidates) > n_samples:
+        idx = rng.choice(len(candidates), n_samples, replace=False)
+        candidates = [candidates[i] for i in idx]
+    return [load_mono_16k_padded(str(p)) for p in candidates]
 
 
-def _apply_noise(y: np.ndarray, noise_type: str, snr: float, wham: np.ndarray | None) -> np.ndarray:
+def _apply_noise(
+    y: np.ndarray,
+    noise_type: str,
+    snr: float,
+    ambient_sample: np.ndarray | None,
+) -> np.ndarray:
     if noise_type == "white":
         return add_white_noise(y, snr)
     if noise_type == "ambient":
-        if wham is None:
-            raise ValueError("ambient noise requires --wham-dir")
-        return add_ambient_noise(y, wham, snr)
+        if ambient_sample is None:
+            raise ValueError("ambient noise requires --wham-dir or --esc50-dir")
+        return add_ambient_noise(y, ambient_sample, snr)
     if noise_type == "reverb":
         # use SNR as a *strength* knob: tempo de decaimento em ms = snr*10
         return add_reverberation(y, decay_time_ms=snr * 10)
     raise ValueError(f"unknown noise_type {noise_type!r}")
 
 
-def _reembed_split(
-    test_data: dict,
+def _reembed_all_conditions(
     audio_paths_per_row: list[list[str]],
-    noise_type: str,
-    snr: float,
+    cond_keys: list[tuple[str, float]],
     *,
-    wham: np.ndarray | None,
+    ambient_pool: list[np.ndarray] | None,
+    ambient_idx_per_row: np.ndarray | None,
     hubert_processor,
     hubert_model,
     vision_model,
@@ -126,35 +157,39 @@ def _reembed_split(
     device: torch.device,
     chunk_samples: int,
     chunk_batch_size: int,
-    text_key: str,
-    audio_key: str,
-) -> dict:
-    """Reextract HuBERT+EfficientNet embeddings on noise-augmented waveforms.
+) -> dict[tuple[str, float], tuple[list[torch.Tensor], list[torch.Tensor]]]:
+    """Single pass over rows; loads each wav once, applies every (noise_type, snr).
 
-    Returns a new ``test_data``-like dict (text/paragraph_id reused as-is).
+    Returns a dict mapping (noise_type, snr) -> (hubert_list, image_list).
     """
-    new_audio: list[torch.Tensor] = []
-    new_image: list[torch.Tensor] = []
     from tqdm import tqdm
-    for paths in tqdm(audio_paths_per_row, desc=f"{noise_type} SNR={snr}"):
-        y = _load_concat(paths)
-        y_noisy = _apply_noise(y, noise_type, snr, wham).astype(np.float32)
-        h = hubert_numpy_waveform(
-            y_noisy, hubert_processor, hubert_model, device,
-            chunk_samples=chunk_samples, chunk_batch_size=chunk_batch_size,
-            pooling="mean",
-        )
-        s = efficientnet_embedding_from_waveform(
-            y_noisy, vision_model, vision_preprocess, device,
-            chunk_samples=chunk_samples, chunk_batch_size=chunk_batch_size,
-            pooling="mean",
-        )
-        new_audio.append(h.detach().cpu().float().contiguous())
-        new_image.append(s.detach().cpu().float().contiguous())
 
-    out = dict(test_data)  # shallow copy
-    out[audio_key] = new_audio
-    out["image"] = new_image
+    out: dict[tuple[str, float], tuple[list[torch.Tensor], list[torch.Tensor]]] = {
+        k: ([], []) for k in cond_keys
+    }
+
+    for row_idx, paths in enumerate(tqdm(audio_paths_per_row, desc="re-embed (all conds)")):
+        y_clean = _load_concat(paths)
+        amb = (
+            ambient_pool[int(ambient_idx_per_row[row_idx])]
+            if ambient_pool is not None and ambient_idx_per_row is not None
+            else None
+        )
+        for nt, snr in cond_keys:
+            y_noisy = _apply_noise(y_clean, nt, snr, amb).astype(np.float32)
+            h = hubert_numpy_waveform(
+                y_noisy, hubert_processor, hubert_model, device,
+                chunk_samples=chunk_samples, chunk_batch_size=chunk_batch_size,
+                pooling="mean",
+            )
+            s = efficientnet_embedding_from_waveform(
+                y_noisy, vision_model, vision_preprocess, device,
+                chunk_samples=chunk_samples, chunk_batch_size=chunk_batch_size,
+                pooling="mean",
+            )
+            out[(nt, snr)][0].append(h.detach().cpu().float().contiguous())
+            out[(nt, snr)][1].append(s.detach().cpu().float().contiguous())
+
     return out
 
 
@@ -193,12 +228,23 @@ def main() -> None:
     if test_data is None:
         raise SystemExit("PKL has neither 'test' nor 'validation' split")
 
-    if "audio_paths" not in test_data:
+    # Spoken-SQuAD format: audio_paths é lista de listas
+    # if "audio_paths" not in test_data:
+    #     raise SystemExit(
+    #         "PKL test split is missing 'audio_paths'. Re-build with the new "
+    #         "scripts/build_spoken_squad_pkl.py."
+    #     )
+    # audio_paths_per_row: list[list[str]] = list(test_data["audio_paths"])
+
+    # VoxPopuli format: audio_path é lista simples — wrapeamos cada item numa lista
+    if "audio_paths" in test_data:
+        audio_paths_per_row: list[list[str]] = list(test_data["audio_paths"])
+    elif "audio_path" in test_data:
+        audio_paths_per_row = [[p] for p in test_data["audio_path"]]
+    else:
         raise SystemExit(
-            "PKL test split is missing 'audio_paths'. Re-build with the new "
-            "scripts/build_spoken_squad_pkl.py."
+            "PKL test split is missing 'audio_paths' (Spoken-SQuAD) ou 'audio_path' (VoxPopuli)."
         )
-    audio_paths_per_row: list[list[str]] = list(test_data["audio_paths"])
 
     pooling_mode = (total.get("_meta") or {}).get("pooling_mode")
     is_chunked = pooling_mode == "chunked" or "paragraph_id" in test_data and all(
@@ -210,16 +256,25 @@ def main() -> None:
     noise_types = _parse_csv_str(args.noise_types)
     ks = _parse_csv_ints(args.hits_k)
 
-    wham = None
+    ambient_pool: list[np.ndarray] | None = None
+    ambient_idx_per_row: np.ndarray | None = None
     if "ambient" in noise_types:
-        if args.wham_dir is None:
-            print("Skipping ambient noise (no --wham-dir).")
+        if args.wham_dir is None and args.esc50_dir is None:
+            print("Skipping ambient noise (no --wham-dir / --esc50-dir).")
             noise_types = [n for n in noise_types if n != "ambient"]
         else:
             try:
-                wham = _load_wham_sample(args.wham_dir)
+                ambient_pool = _load_ambient_pool(
+                    args.wham_dir, args.esc50_dir,
+                    n_samples=args.ambient_num_samples, seed=args.ambient_seed,
+                )
+                rng = np.random.default_rng(args.ambient_seed)
+                ambient_idx_per_row = rng.integers(
+                    0, len(ambient_pool), size=len(audio_paths_per_row)
+                )
+                print(f"Ambient pool: {len(ambient_pool)} WAVs pre-loaded.")
             except FileNotFoundError as e:
-                print(f"WHAM not found ({e}); skipping ambient noise.")
+                print(f"Ambient noise unavailable ({e}); skipping ambient.")
                 noise_types = [n for n in noise_types if n != "ambient"]
 
     # Models
@@ -242,19 +297,24 @@ def main() -> None:
     }
     print(f"  clean: {results['clean']}")
 
-    for nt in noise_types:
-        for snr in snr_levels:
+    cond_keys: list[tuple[str, float]] = [(nt, snr) for nt in noise_types for snr in snr_levels]
+    if cond_keys:
+        print(f"\nRe-embedding {len(cond_keys)} noise conditions in a single row-major pass …")
+        reembedded = _reembed_all_conditions(
+            audio_paths_per_row, cond_keys,
+            ambient_pool=ambient_pool, ambient_idx_per_row=ambient_idx_per_row,
+            hubert_processor=hubert_processor, hubert_model=hubert_model,
+            vision_model=vision_model, vision_preprocess=vision_preprocess,
+            device=device,
+            chunk_samples=args.chunk_samples, chunk_batch_size=args.chunk_batch_size,
+        )
+
+        for nt, snr in cond_keys:
             tag = f"{nt}_{snr}"
-            print(f"\nRe-embedding for {tag} …")
-            new_test = _reembed_split(
-                test_data, audio_paths_per_row, nt, snr,
-                wham=wham,
-                hubert_processor=hubert_processor, hubert_model=hubert_model,
-                vision_model=vision_model, vision_preprocess=vision_preprocess,
-                device=device,
-                chunk_samples=args.chunk_samples, chunk_batch_size=args.chunk_batch_size,
-                text_key=args.text_key, audio_key=args.audio_key,
-            )
+            new_audio, new_image = reembedded[(nt, snr)]
+            new_test = dict(test_data)
+            new_test[args.audio_key] = new_audio
+            new_test["image"] = new_image
             r = _retrieve(
                 model, new_test,
                 is_chunked=is_chunked,

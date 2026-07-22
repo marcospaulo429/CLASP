@@ -20,7 +20,6 @@ from clasp.evaluation.metrics import (
 )
 from clasp.evaluation.ranking_metrics import compute_ranking_metrics, similarity_matrix_to_rows
 from clasp.evaluation.retrieval_plots import save_retrieval_plot
-from clasp.evaluation.spiral_runner import run_spiral_retrieval_eval
 from clasp.inference.pipeline import load_model
 from clasp.retrieval.search import build_similarity_matrix
 
@@ -135,6 +134,7 @@ def main():
     device = get_default_device()
 
     if args.mode == "spiral":
+        from clasp.evaluation.spiral_runner import run_spiral_retrieval_eval  # noqa: E402
         if not args.model_path:
             raise ValueError("--model-path is required for spiral mode")
         dp = Path(args.dataset_path)

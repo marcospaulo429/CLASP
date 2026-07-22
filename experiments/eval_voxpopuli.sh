@@ -93,8 +93,6 @@ wham_flag=""
 python scripts/run_noise_robustness_eval.py \
     --dataset-path "$PKL" \
     --model-path "$MODEL" \
-    --audio-paths-from-pickle \
-    --num-candidates "$NUM_CANDIDATES" \
     --snr-levels "$SNR_LEVELS" \
     --output-csv "${ARTIFACTS}/noise_results.csv" \
     $wham_flag \

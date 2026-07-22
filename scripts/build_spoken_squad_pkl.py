@@ -63,12 +63,24 @@ def collect_paragraph_chunks(json_path: Path, wav_dir: Path) -> list[dict]:
 
     # mapeia (a_idx, p_idx) -> [(chunk_idx, path), ...]
     per_paragraph: dict[tuple[int, int], list[tuple[int, str]]] = defaultdict(list)
+
+    # --- Spoken-SQuAD original: {a}_{p}_{c}.wav direto na pasta ---
+    # for wav in wav_dir.glob("*.wav"):
+    #     try:
+    #         a, p, c = wav.stem.split("_")
+    #         per_paragraph[(int(a), int(p))].append((int(c), str(wav)))
+    #     except ValueError:
+    #         continue
+
+    # --- spoken_squad_seed-vc: {a}_{p}_{c}__{speaker}.wav direto na subpasta da voz ---
     for wav in wav_dir.glob("*.wav"):
         try:
-            a, p, c = wav.stem.split("_")
+            chunk_part = wav.stem.split("__")[0]  # "0_0_0"
+            a, p, c = chunk_part.split("_")
             per_paragraph[(int(a), int(p))].append((int(c), str(wav)))
-        except ValueError:
+        except (ValueError, IndexError):
             continue
+
     for k in per_paragraph:
         per_paragraph[k].sort(key=lambda x: x[0])
 

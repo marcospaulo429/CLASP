@@ -51,7 +51,7 @@ LOG_DIR="${ROOT}/logs/voxpopuli_${TIMESTAMP}"
 mkdir -p "$LOG_DIR"
 
 PKL="${PKL:-${ROOT}/data/datasets/total_dataset_voxpopuli_${TIMESTAMP}.pkl}"
-MODEL="${MODEL:-${ROOT}/models/checkpoints/clasp_voxpopuli_${TIMESTAMP}.pt}"
+MODEL="${MODEL:-${ROOT}/models/checkpoints/clasp_spoken_squad%2Bvoxpopuli.pt}"
 INIT_CKPT="${ROOT}/models/checkpoints/CLASP_Concat_Final_Fusion_Encoder.pt"
 TRAIN_WAV_DIR="${ROOT}/data/datasets/voxpopuli_en_train_wav"
 VAL_WAV_DIR="${ROOT}/data/datasets/voxpopuli_en_validation_wav"
@@ -154,8 +154,6 @@ echo "[4/4] Noise robustness evaluation …"
 python scripts/run_noise_robustness_eval.py \
     --dataset-path "$PKL" \
     --model-path "$MODEL" \
-    --audio-paths-from-pickle \
-    --num-candidates "$NUM_CANDIDATES" \
     --snr-levels "$SNR_LEVELS" \
     --output-csv "${ARTIFACTS}/noise_results.csv" \
     2>&1 | tee "${LOG_DIR}/eval_noise.log"
