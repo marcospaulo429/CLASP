@@ -21,8 +21,19 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
 from pathlib import Path
+
+# Native-lib guards: MSEB pulls TensorFlow + array_record + apache-beam, whose
+# native libraries can clash with torch's (protobuf/abseil/CUDA symbol collisions)
+# and segfault. Force the pure-Python protobuf impl and quiet TF, then import torch
+# FIRST so its libraries load before MSEB's. Override the env vars if they hurt.
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
+import torch  # noqa: F401,E402  (must precede the MSEB task import)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))

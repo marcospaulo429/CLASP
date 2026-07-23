@@ -44,6 +44,9 @@ mseb = [
   "sentence-transformers",
   "torchvision",
   "Pillow",
+  # Floor apache-beam to a Python 3.12-compatible release; without this the
+  # resolver can backtrack to an ancient 2.3.0 that fails to build on 3.12.
+  "apache-beam>=2.60",
 ]
 # SVQ native retrieval baseline + end-to-end RAG eval (CLASP retrieval + LLM
 # generation). The default generator is Qwen3-8B, which needs transformers>=4.51

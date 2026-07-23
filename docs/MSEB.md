@@ -24,13 +24,23 @@ environment. CLASP itself supports 3.12, so both coexist there.
 ```bash
 # dedicated 3.12 env for MSEB runs
 uv venv --python 3.12 .venv-mseb
-VIRTUAL_ENV=.venv-mseb uv pip install -e ".[mseb]"
-# CLASP runtime deps used by the adapter (if not already pulled in):
+
+# install mseb first, in isolation — resolving it together with CLASP's deps can
+# make uv backtrack apache-beam to an ancient 2.3.0 that fails to build on 3.12.
+VIRTUAL_ENV=.venv-mseb uv pip install \
+  "mseb @ git+https://github.com/google-research/mseb.git" openai-whisper
+# CLASP runtime deps used by the adapter:
 VIRTUAL_ENV=.venv-mseb uv pip install sentence-transformers torchvision matplotlib
+# then CLASP itself, without re-resolving everything:
+VIRTUAL_ENV=.venv-mseb uv pip install -e . --no-deps
 ```
 
-The `[mseb]` extra pins `openai-whisper` on purpose: the reranking evaluator
-imports `whisper.normalizers`, which the unrelated `whisper` PyPI package lacks.
+`openai-whisper` is required on purpose: the reranking evaluator imports
+`whisper.normalizers`, which the unrelated `whisper` PyPI package lacks.
+
+> The `[mseb]` extra (`uv pip install -e ".[mseb]"`) also works but is more prone
+> to the apache-beam backtrack above; the isolated install is the reliable path.
+> Verify with: `python -c "import mseb, whisper.normalizers; print('ok')"`.
 
 ### Platform note
 
