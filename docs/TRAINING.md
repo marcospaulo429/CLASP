@@ -1,21 +1,22 @@
-# Guia de Treino — CLASP
+# Training Guide — CLASP
 
-Este guia cobre como construir o dataset pickle e disparar o treino para cada uma das três fontes de dados suportadas: **VoxPopuli**, **Spoken SQuAD** e **SPIRAL**.
+This guide covers building the dataset pickle and launching training for each of
+the three supported data sources: **VoxPopuli**, **Spoken SQuAD**, and **SPIRAL**.
 
 ---
 
-## Pré-requisitos
+## Prerequisites
 
 ```bash
-# Ambiente base
+# base environment
 uv sync
 
-# Extras por dataset
+# per-dataset extras
 uv sync --extra voxpopuli     # VoxPopuli
 uv sync --extra realdata      # Spoken SQuAD / SpeechBrown
 ```
 
-Checkpoint oficial para warm-start (recomendado):
+Official checkpoint for warm-start (recommended):
 
 ```bash
 huggingface-cli download llm-lab/CLASP CLASP_Concat_Final_Fusion_Encoder.pt \
@@ -26,24 +27,24 @@ huggingface-cli download llm-lab/CLASP CLASP_Concat_Final_Fusion_Encoder.pt \
 
 ## 1. VoxPopuli (English)
 
-### 1a. Build do dataset
+### 1a. Build the dataset
 
 ```bash
-# Split de validação do HF (padrão) — cria PKL com splits train/validation/test
+# HF validation split (default) — creates a PKL with train/validation/test splits
 python scripts/build_voxpopuli_pkl.py \
   --output data/datasets/total_dataset_voxpopuli.pkl \
   --audio-cache-dir data/datasets/voxpopuli_en_validation_wav \
   --replicate-for-train \
-  --max-samples 2000          # remova para usar tudo (~1752 amostras)
+  --max-samples 2000          # remove to use everything (~1752 samples)
 ```
 
-Flags úteis:
-- `--require-gold-only` — usa somente transcrições marcadas como gold
-- `--val-fraction 0.1` — 90 % treino / 10 % validação (em vez de `--replicate-for-train`)
-- `--hf-split train` — usa o split de treino do HF (muito maior, baixa parquets de treino)
-- `--validation-parquet /path/to/file.parquet` — para uso offline
+Useful flags:
+- `--require-gold-only` — use only transcripts marked as gold
+- `--val-fraction 0.1` — 90% train / 10% validation (instead of `--replicate-for-train`)
+- `--hf-split train` — use the HF train split (much larger; downloads train parquets)
+- `--validation-parquet /path/to/file.parquet` — for offline use
 
-### 1b. Treino
+### 1b. Training
 
 ```bash
 python scripts/train.py \
@@ -56,25 +57,25 @@ python scripts/train.py \
   --batch-size-val 16
 ```
 
-### 1c. Script all-in-one (build + treino)
+### 1c. All-in-one script (build + train)
 
 ```bash
 bash scripts/run_training.sh [MAX_TRAIN_SAMPLES] [MAX_VAL_SAMPLES] [NUM_EPOCHS]
 
-# Exemplos:
-bash scripts/run_training.sh                 # defaults: 10000 / todos / 50 epochs
-bash scripts/run_training.sh 50000 1000 100  # 50k treino, 1k val, 100 epochs
-bash scripts/run_training.sh all all 100     # dataset completo
+# Examples:
+bash scripts/run_training.sh                 # defaults: 10000 / all / 50 epochs
+bash scripts/run_training.sh 50000 1000 100  # 50k train, 1k val, 100 epochs
+bash scripts/run_training.sh all all 100     # full dataset
 ```
 
 ---
 
 ## 2. Spoken SQuAD
 
-Os arquivos JSON (`spoken_train-v1.1.json`, `spoken_test-v1.1.json`) ficam na raiz do projeto.
-Os WAVs de treino ficam em `train_wav/` e os de dev em `dev_wav/`.
+The JSON files (`spoken_train-v1.1.json`, `spoken_test-v1.1.json`) live at the
+project root. Train WAVs go in `train_wav/` and dev WAVs in `dev_wav/`.
 
-### 2a. Build do dataset
+### 2a. Build the dataset
 
 ```bash
 python scripts/build_spoken_squad_pkl.py \
@@ -85,7 +86,7 @@ python scripts/build_spoken_squad_pkl.py \
   --output data/datasets/total_dataset_spoken_squad.pkl
 ```
 
-Para teste rápido (limita amostras):
+For a quick test (limit samples):
 
 ```bash
 python scripts/build_spoken_squad_pkl.py \
@@ -98,7 +99,7 @@ python scripts/build_spoken_squad_pkl.py \
   --max-val-samples 50
 ```
 
-### 2b. Treino
+### 2b. Training
 
 ```bash
 python scripts/train.py \
@@ -115,30 +116,31 @@ python scripts/train.py \
 
 ## 3. SPIRAL
 
-O SPIRAL usa avaliação on-the-fly diretamente do JSONL — não precisa de build de PKL separado.
-O treino com SPIRAL ainda requer um PKL (use VoxPopuli ou Spoken SQuAD como base).
+SPIRAL uses on-the-fly evaluation directly from the JSONL — no separate PKL build
+is needed. Training with SPIRAL still requires a PKL (use VoxPopuli or Spoken
+SQuAD as the base).
 
-Para **avaliar** no SPIRAL, veja o [guia de avaliação](EVAL.md#3-spiral).
+To **evaluate** on SPIRAL, see the [evaluation guide](EVAL.md#3-spiral).
 
 ---
 
-## Flags comuns do `train.py`
+## Common `train.py` flags
 
-| Flag | Padrão | Descrição |
-|------|--------|-----------|
-| `--dataset-path` | — | PKL com splits `train` / `validation` |
-| `--save-path` | — | Onde salvar o checkpoint treinado |
-| `--init-checkpoint` | `None` | Fusion weights para warm-start (não restaura otimizador) |
-| `--num-epochs` | 100 | Número de epochs |
-| `--learning-rate` | 1e-4 | Taxa de aprendizado |
-| `--batch-size-train` | 32 | Batch de treino |
-| `--batch-size-val` | 16 | Batch de validação |
-| `--patience` | 10 | Early stopping: epochs sem melhora |
-| `--no-early-stopping` | — | Desativa early stopping |
-| `--freeze-encoders` | — | Congela `audio_seq` e `image_seq`; treina só o fusion head |
-| `--wandb-project` | `None` | Habilita logging no W&B |
-| `--in-features-text` | 1024 | Dim. de entrada do encoder de texto (LaBSE = 1024) |
-| `--in-features-image` | 1000 | Dim. de entrada do encoder de imagem (EfficientNet-B7 = 1000) |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dataset-path` | — | PKL with `train` / `validation` splits |
+| `--save-path` | — | Where to save the trained checkpoint |
+| `--init-checkpoint` | `None` | Fusion weights for warm-start (does not restore the optimizer) |
+| `--num-epochs` | 100 | Number of epochs |
+| `--learning-rate` | 1e-4 | Learning rate |
+| `--batch-size-train` | 32 | Training batch size |
+| `--batch-size-val` | 16 | Validation batch size |
+| `--patience` | 10 | Early stopping: epochs without improvement |
+| `--no-early-stopping` | — | Disable early stopping |
+| `--freeze-encoders` | — | Freeze `audio_seq` and `image_seq`; train only the fusion head |
+| `--wandb-project` | `None` | Enable W&B logging |
+| `--in-features-text` | 1024 | Audio (HuBERT) input dim of the encoder |
+| `--in-features-image` | 1000 | Image (EfficientNet-B7) input dim of the encoder |
 
 ---
 
@@ -166,4 +168,4 @@ docker run --rm -it --gpus all \
     --num-epochs 50
 ```
 
-Use `clasp:arm64` em máquinas Apple Silicon / ARM.
+Use `clasp:arm64` on Apple Silicon / ARM machines.

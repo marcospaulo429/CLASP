@@ -34,6 +34,28 @@ voxpopuli = [
 notebooks = [
   "datasets",
 ]
+# MSEB / SVQ benchmark (reranking + retrieval). Requires Python >= 3.12, so
+# install into a dedicated 3.12 env, not the base 3.10 venv. See docs/MSEB.md.
+# `openai-whisper` is pinned because the reranking evaluator imports
+# `whisper.normalizers`, which the similarly-named `whisper` package lacks.
+mseb = [
+  "mseb @ git+https://github.com/google-research/mseb.git",
+  "openai-whisper",
+  "sentence-transformers",
+  "torchvision",
+  "Pillow",
+]
+# SVQ native retrieval baseline + end-to-end RAG eval (CLASP retrieval + LLM
+# generation). The default generator is Qwen3-8B, which needs transformers>=4.51
+# and a CUDA GPU (e.g. a 4090). Runs in the base Python 3.10 env.
+rag = [
+  "datasets",
+  "sentence-transformers",
+  "torchvision",
+  "Pillow",
+  "transformers>=4.51",
+  "accelerate",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clasp"]

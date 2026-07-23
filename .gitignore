@@ -12,6 +12,8 @@ Spoken*
 data/
 results/
 venv/
+.venv/
+.venv-mseb/
 train_wav/
 spiral_dataset/
 logs*

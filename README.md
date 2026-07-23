@@ -13,14 +13,20 @@ Original implementation of [CLASP: Contrastive Language-Speech Pretraining for M
 
 - **[Training guide](docs/TRAINING.md)** — how to train with VoxPopuli, Spoken SQuAD, and SPIRAL
 - **[Evaluation guide](docs/EVAL.md)** — retrieval eval and noise robustness on each dataset
+- **[MSEB / SVQ guide](docs/MSEB.md)** — acoustic-hypothesis reranking and audio→text retrieval on SVQ
+- **[Roadmap](docs/ROADMAP.md)** — planned evaluations and research directions
 
 ## Project structure
 
 ```text
 .
 ├── src/clasp/          # library code (models, data, inference, evaluation)
-├── scripts/            # train.py, build_*_pkl.py, run_*_eval.py
+│   ├── mseb_adapter/   # CLASP encoder for the MSEB / SVQ benchmark
+│   └── rag/            # SVQ end-to-end RAG (CLASP retrieval + LLM generation)
+├── scripts/            # train.py, build_*_pkl.py, run_*_eval.py, run_mseb_task.py, run_svq_rag_eval.py
+├── experiments/        # shell launchers + eval queue
 ├── notebooks/          # original notebooks (unchanged)
+├── docs/               # TRAINING / EVAL / MSEB / ROADMAP guides
 ├── models/checkpoints/ # *.pt weights
 ├── data/datasets/      # total_dataset_*.pkl
 └── artifacts/          # embeddings, plots
