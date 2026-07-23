@@ -82,6 +82,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-dir", default=None, help="Optional runner cache/output dir")
     p.add_argument("--chunk-batch-size", type=int, default=4, help="HuBERT/EfficientNet chunk batch size")
     p.add_argument(
+        "--dataset-basepath",
+        default=None,
+        help="Local dir with the SVQ dataset (utt_index.jsonl + audio/*.parquet). "
+             "If omitted, the SVQ dataset is streamed from the HF Hub (no full download).",
+    )
+    p.add_argument(
         "--task-module",
         default=None,
         help="Dotted module to import so the task registers (default: guessed from --task).",
@@ -116,6 +122,29 @@ def main() -> None:
         absl_flags.FLAGS([sys.argv[0]])
     absl_flags.FLAGS.task_cache_basepath = cache_root
     absl_flags.FLAGS.runner_cache_basepath = cache_root
+
+    # The SVQ dataset needs a base path. If one is given, read it locally; otherwise
+    # stream from the HF Hub. The SVQ task hardcodes streaming=False, so to stream we
+    # monkeypatch SimpleVoiceQuestionsDataset to default streaming=True (base_path is
+    # then only a non-None placeholder to satisfy get_base_path()).
+    if args.dataset_basepath:
+        absl_flags.FLAGS.dataset_basepath = os.path.abspath(args.dataset_basepath)
+    else:
+        absl_flags.FLAGS.dataset_basepath = cache_root  # placeholder (unused when streaming)
+        try:
+            from mseb.datasets import simple_voice_questions as _svq_ds
+
+            _orig_svq_init = _svq_ds.SimpleVoiceQuestionsDataset.__init__
+
+            def _streaming_svq_init(self, base_path=None, split="all",
+                                    streaming=False, repo_id="google/svq"):
+                _orig_svq_init(self, base_path=base_path, split=split,
+                               streaming=True, repo_id=repo_id)
+
+            _svq_ds.SimpleVoiceQuestionsDataset.__init__ = _streaming_svq_init
+        except Exception as e:  # pragma: no cover
+            print(f"WARN: could not enable SVQ streaming ({e}); "
+                  "pass --dataset-basepath with a local SVQ copy instead.")
 
     encoder = ClaspMultiModalEncoder(
         model_path=args.model_path,
