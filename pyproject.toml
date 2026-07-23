@@ -57,6 +57,12 @@ rag = [
   "accelerate",
 ]
 
+[tool.hatch.metadata]
+# Allow the `mseb @ git+https://...` direct reference in the [mseb] extra.
+# Hatchling validates all optional-dependencies at build time, so this is
+# required even when installing only [rag].
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/clasp"]
 
