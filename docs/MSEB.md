@@ -50,6 +50,12 @@ happen on **Linux/x86** or via the repo's Docker images (`docker/`). Retrieval
 tasks additionally require `scann`, which only ships x86-Linux wheels. Reranking
 task *modules* import fine on macOS; only the dataset I/O is affected.
 
+**Triton segfault (Linux):** in this env `torchvision` pulls `torch._dynamo` →
+`triton`, whose native LLVM libs can segfault when loaded after TensorFlow /
+apache-beam / array_record. `run_mseb_task.py` imports torchvision early to avoid
+it; if a segfault still points at `triton/knobs.py`, just remove triton (it isn't
+used by the eval): `uv pip uninstall triton`.
+
 ## Running a task
 
 ```bash

@@ -35,6 +35,15 @@ os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 import torch  # noqa: F401,E402  (must precede the MSEB task import)
 
+# torchvision pulls torch._dynamo -> triton, whose native (LLVM) libs segfault if
+# loaded AFTER TensorFlow/apache-beam/array_record (which the MSEB task import pulls).
+# Import it here so triton loads first. If triton itself segfaults on import in this
+# env, uninstall it (`uv pip uninstall triton`) — it isn't needed for the eval.
+try:
+    import torchvision.models  # noqa: F401,E402
+except Exception:  # pragma: no cover - torchvision optional at import time
+    pass
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
