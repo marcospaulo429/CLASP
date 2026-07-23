@@ -99,11 +99,23 @@ def main() -> None:
     else:
         importlib.import_module("mseb.tasks")  # fall back to full registry
 
+    from absl import flags as absl_flags
     from mseb import leaderboard
     from mseb import runner as runner_lib
     from mseb.task import get_task_by_name
 
     from clasp.mseb_adapter.clasp_encoder import ClaspMultiModalEncoder
+
+    # MSEB reads config from absl flags (e.g. --task_cache_basepath, whose default is
+    # None). Our driver uses argparse, not app.run(), so absl flags are unparsed —
+    # parse them (program name only, applying defaults) and point the cache dirs at a
+    # writable location, otherwise the reranking task's os.path.join(None, ...) fails.
+    cache_root = os.path.abspath(args.cache_dir) if args.cache_dir else str(ROOT / "artifacts_user" / "mseb_cache")
+    os.makedirs(cache_root, exist_ok=True)
+    if not absl_flags.FLAGS.is_parsed():
+        absl_flags.FLAGS([sys.argv[0]])
+    absl_flags.FLAGS.task_cache_basepath = cache_root
+    absl_flags.FLAGS.runner_cache_basepath = cache_root
 
     encoder = ClaspMultiModalEncoder(
         model_path=args.model_path,
@@ -114,7 +126,7 @@ def main() -> None:
         encoder=encoder,
         batch_size=args.batch_size,
         num_threads=args.num_threads,
-        output_path=args.cache_dir,
+        output_path=cache_root,
     )
     task = get_task_by_name(args.task)()
     task.setup(runner=runner)
