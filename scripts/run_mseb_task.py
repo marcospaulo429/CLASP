@@ -70,6 +70,27 @@ def _guess_task_module(task_name: str) -> str | None:
     return None
 
 
+# Small root-level task file each task family reads from base_path (audio is streamed
+# separately). Used to fetch just that file from the Hub instead of the full dataset.
+_TASK_FILE_BY_KEYWORD = {
+    "reranking": "query_reranking",
+    "documentcrosslang": "document_retrieval_cross_lang",
+    "documentinlang": "document_retrieval_in_lang",
+    "passagecrosslang": "passage_retrieval_cross_lang",
+    "passageinlang": "passage_retrieval_in_lang",
+    "document": "document_retrieval_in_lang",
+    "passage": "passage_retrieval_in_lang",
+}
+
+
+def _guess_task_file(task_name: str) -> str | None:
+    key = task_name.lower()
+    for keyword, stem in _TASK_FILE_BY_KEYWORD.items():
+        if keyword in key:
+            return stem
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--task", required=True, help="MSEB task name, e.g. SVQEnUsQueryReranking")
@@ -130,7 +151,31 @@ def main() -> None:
     if args.dataset_basepath:
         absl_flags.FLAGS.dataset_basepath = os.path.abspath(args.dataset_basepath)
     else:
-        absl_flags.FLAGS.dataset_basepath = cache_root  # placeholder (unused when streaming)
+        # Stream audio + index from the Hub, but the small per-task file must exist
+        # locally (SVQ.get_task_data reads it from base_path). Download just that file.
+        svq_meta = os.path.join(cache_root, "svq_meta")
+        os.makedirs(svq_meta, exist_ok=True)
+        absl_flags.FLAGS.dataset_basepath = svq_meta
+
+        task_stem = _guess_task_file(args.task)
+        if task_stem:
+            from huggingface_hub import hf_hub_download
+            downloaded = False
+            for ext in ("parquet", "jsonl"):
+                if os.path.exists(os.path.join(svq_meta, f"{task_stem}.{ext}")):
+                    downloaded = True
+                    break
+                try:
+                    hf_hub_download("google/svq", f"{task_stem}.{ext}",
+                                    repo_type="dataset", local_dir=svq_meta)
+                    print(f"Fetched SVQ task file {task_stem}.{ext} -> {svq_meta}")
+                    downloaded = True
+                    break
+                except Exception:
+                    continue
+            if not downloaded:
+                print(f"WARN: could not fetch SVQ task file for '{args.task}'.")
+
         try:
             from mseb.datasets import simple_voice_questions as _svq_ds
 
